@@ -58,6 +58,13 @@ rule the harnesses are built to satisfy, and it was learned the hard way.
   rules it is checking are still checked exactly once, on a connection that was
   established.
 
+* **A check that fails while reporting no failing assertion is the machine.**
+  Acceptance check 55 (`node --test` over the wallet module) failed once during a
+  full run with TAP output that contained only `ok 1` and no failing subtest, and
+  passed standalone immediately after; the same shape was seen once on check 56.
+  Confirm a check like that on its own before changing anything — and do not
+  discard a check's stderr, which is where the difference lives.
+
 Three consecutive full-workspace runs under ten CPU spinners pass — 358 tests,
 no failures — and they are the gate for any change to a harness.
 

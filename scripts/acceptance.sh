@@ -281,8 +281,13 @@ check 53 "a wallet derives 256 bits of entropy into a 24-word phrase" \
     bash -c 'grep -q "24" crates/obs-wallet/src/lib.rs && grep -q "entropy" crates/obs-wallet/src/lib.rs'
 check 54 "the keystore is sealed with Argon2id and ChaCha20-Poly1305" \
     bash -c 'grep -q "Argon2id" crates/obs-wallet/src/keystore.rs && grep -q "ChaCha20\|chacha" crates/obs-wallet/src/keystore.rs'
+# No stderr suppression here.  A check that fails while saying nothing is worse
+# than a check that fails loudly: this one once reported a failure whose own TAP
+# output contained only `ok 1` and no failing assertion — the machine, not the
+# module, and it passed standalone — and the discarded stderr was the only place
+# that could have said so.
 check 55 "the wasm module exports the ABI the interface expects" \
-    node --test web/tests/wallet-module.test.mjs 2>/dev/null
+    node --test web/tests/wallet-module.test.mjs
 check 56 "a wallet created in the module has three distinct keys" \
     cargo test -p obs-wallet --quiet 2>/dev/null
 check 57 "the installed wasm artifact matches the current source" \
