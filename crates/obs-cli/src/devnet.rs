@@ -166,10 +166,33 @@ pub fn init(context: &Context, args: &Args) -> Result<(), CliError> {
         println!("obs-cli: founder password file {}", password_file.display());
     }
 
-    // --- the registration, if the node is up --------------------------------
+    // --- the registration, only when it was asked for ----------------------
     // Last, so the operator has already seen the wallet and the node command even
     // when the node is not running yet.
-    let registered = register_founder(context, args, &wallet, &authority, &invite_code, &canonical)?;
+    //
+    // `init` registers only when the operator named the node with `--node-url`.
+    // Without that, the registration would go to whatever answers on the
+    // network's *default* port — which, on a machine that is already serving
+    // another deployment of the same network, is somebody else's chain.  The
+    // founder would then be registered into a chain this data directory does not
+    // hold, and the deployment being founded would come up with an unregistered
+    // founder and no genesis allocation.  A devnet, a staging network and a
+    // testnet can all be founded on one machine; the port a chain answers on is
+    // not evidence that it is *this* chain.
+    let registered = if may_register_implicitly(args) {
+        register_founder(context, args, &wallet, &authority, &invite_code, &canonical)?
+    } else {
+        println!(
+            "obs-cli: the founder is not registered yet: no --node-url was given, so init did \
+             not guess at a chain"
+        );
+        println!(
+            "obs-cli:   register once the node is up:  obs-cli devnet register --node-url <url> \
+             --data-dir {}",
+            data_dir.display()
+        );
+        None
+    };
 
     println!();
     match registered {
@@ -352,6 +375,17 @@ fn hex(bytes: &[u8]) -> String {
     obs_crypto::encoding::hex_encode(bytes)
 }
 
+/// Whether `devnet init` may register the founder without being told where.
+///
+/// Only when the operator named the node.  An implicit registration is a guess
+/// about which chain is on the other end of a port, and a guess that lands on
+/// the wrong one is not "a founder registered twice" — it is a founder
+/// registered somewhere else entirely, into a chain this data directory will
+/// never hold.
+fn may_register_implicitly(args: &Args) -> bool {
+    args.get("node-url").map(|url| !url.trim().is_empty()).unwrap_or(false)
+}
+
 /// `devnet register` — submit the founder's registration on an existing devnet.
 ///
 /// This is the same idempotent step `devnet init` ends with, on its own, so an
@@ -409,6 +443,32 @@ mod tests {
                 None => assert!(founder_invite(network, &args(&[])).is_err()),
             }
         }
+    }
+
+    #[test]
+    fn init_registers_only_when_the_operator_named_the_node() {
+        assert!(
+            !may_register_implicitly(&args(&[])),
+            "founding a network must not register the founder into whatever answers on the default port"
+        );
+        let known = ["invite", "gmail", "node-url"];
+        assert!(may_register_implicitly(
+            &Args::parse(
+                "obs-cli",
+                &["--node-url".to_string(), "http://127.0.0.1:7200".to_string()],
+                &known
+            )
+            .expect("parse")
+        ));
+        // A blank value is not a destination.
+        assert!(!may_register_implicitly(
+            &Args::parse(
+                "obs-cli",
+                &["--node-url".to_string(), "   ".to_string()],
+                &known
+            )
+            .expect("parse")
+        ));
     }
 
     #[test]

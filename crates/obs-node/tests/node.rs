@@ -1540,3 +1540,62 @@ fn the_api_reports_pool_events_and_peers() {
     assert_eq!(validators.get("active").unwrap().as_i128(), Some(0));
     assert_eq!(validators.get("validators").unwrap().as_array().unwrap().len(), 0);
 }
+
+/// A configured peer that restarts is dialled again.
+///
+/// The defect this test exists for: `--peer` was a one-shot dial at startup, so
+/// a peer that was not listening at that moment — because it had not started
+/// yet, or because it had just been restarted — was never tried again.  The two
+/// nodes then stayed apart until somebody restarted one of them by hand, which
+/// on a two-host network looks exactly like a chain that has stopped, and is the
+/// kind of thing an operator discovers at three in the morning.
+///
+/// The test does the real thing: a node, a peer that is taken away, and a peer
+/// that comes back on the same address.
+#[test]
+fn a_configured_peer_that_restarts_is_dialled_again() {
+    let devnet = Devnet::launch();
+    let seed = Keypair::from_seed(&[71u8; 32]);
+
+    let peer = Running::start(devnet.node("restart-peer", 71, Some(&seed)));
+    let peer_addr = peer.with(|node| node.listen_addr());
+
+    let follower = Running::start(
+        Node::open(devnet.config("restart-follower", 72).with_peers(vec![peer_addr])).unwrap(),
+    );
+    assert!(
+        wait_until(TEST_DEADLINE, || follower
+            .with(|node| !node.peer_status().is_empty())),
+        "the follower connects to the peer it was told about"
+    );
+
+    // The peer goes away.  The follower must notice: a peer list that still
+    // claims a dead connection would make the next assertion meaningless.
+    drop(peer);
+    assert!(
+        wait_until(TEST_DEADLINE, || follower
+            .with(|node| node.peer_status().is_empty())),
+        "the follower notices the peer is gone"
+    );
+
+    // The peer comes back on the same address, as a restart does.  The node's
+    // identity is new — a restart is a new process — so the connection that
+    // forms is a genuinely new one, not a half-open socket that was never
+    // cleaned up.
+    let mut config = devnet.config("restart-peer-again", 73);
+    config.listen_port = peer_addr.port();
+    config.mine = true;
+    config.mining_key = Some(Keypair::from_seed(&[71u8; 32]));
+    let peer_again = Running::start(Node::open(config).unwrap());
+
+    assert!(
+        wait_until(TEST_DEADLINE, || follower
+            .with(|node| !node.peer_status().is_empty())),
+        "the follower reconnects to the restarted peer without being restarted itself"
+    );
+    assert!(
+        wait_until(TEST_DEADLINE, || peer_again
+            .with(|node| !node.peer_status().is_empty())),
+        "the restarted peer sees the follower too"
+    );
+}

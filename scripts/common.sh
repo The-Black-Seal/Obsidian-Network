@@ -89,6 +89,45 @@ wait_for_agreement() { # wait_for_agreement <seconds> <node-url>...
     return 1
 }
 
+# The genesis record a node writes into its data directory: the chain's identity
+# as this deployment knows it.  A node answering on a port is not evidence that
+# it is *this* chain — on a machine with two deployments of the same network it
+# is exactly the wrong evidence — so every script that reads a node on behalf of
+# a directory checks this first.
+deployment_genesis_timestamp() { # deployment_genesis_timestamp <deployment dir> <network>
+    local file
+    for file in "$1/node/$2-genesis" "$1/$2-genesis"; do
+        if [ -f "$file" ]; then
+            awk '$1 == "timestamp" { print $2; exit }' "$file"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Fail-closed check: the node at <url> must be running the chain that
+# <deployment dir> holds.  Returns 0 when it is (or when the directory has no
+# chain yet, which is a different situation and not this function's business),
+# 1 when it is a different chain, having explained why.
+node_serves_deployment() { # node_serves_deployment <node-url> <deployment dir> <network>
+    local url="$1" dir="$2" network="$3" local_epoch remote_epoch status
+    local_epoch="$(deployment_genesis_timestamp "$dir" "$network" 2>/dev/null || true)"
+    [ -n "$local_epoch" ] || return 0
+    status="$(http_ok "$url/api/v1/status" 2>/dev/null || true)"
+    [ -n "$status" ] || return 0
+    remote_epoch="$(json_number "$status" genesis_timestamp)"
+    [ -n "$remote_epoch" ] || return 0
+    if [ "$local_epoch" = "$remote_epoch" ]; then
+        return 0
+    fi
+    printf '%s: the node at %s is a different chain\n' "${OBS_TAG:-obsidian}" "$url" >&2
+    printf '  %s holds a chain with genesis %s\n' "$dir" "$local_epoch" >&2
+    printf '  the node answers with genesis %s\n' "$remote_epoch" >&2
+    printf '  a genesis timestamp is the chain identity: two networks, two chains.\n' >&2
+    printf '  pass --node-url for the node attached to %s.\n' "$dir" >&2
+    return 1
+}
+
 # Reads one KEY=value out of a deployment's env file, if it exists.
 env_value() { # env_value <file> <key>
     [ -f "$1" ] || return 1

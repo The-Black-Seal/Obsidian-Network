@@ -57,6 +57,10 @@ fi
 # The node answers → it is running, and a live snapshot needs to be asked for.
 running=0
 if http_ok "$NODE_URL/api/v1/status" >/dev/null 2>&1; then running=1; fi
+# The manifest is written from the node's answer and the archive is taken from
+# the directory, so the two must be the same chain: a manifest that describes
+# somebody else's chain is a lie that only surfaces on the day it is restored.
+node_serves_deployment "$NODE_URL" "$DEPLOY_DIR" "$NETWORK" || exit 2
 if [ "$running" = 1 ] && [ "$LIVE" != 1 ]; then
     cat >&2 <<EOF
 backup: the node is answering on $NODE_URL, so its block log is being written.

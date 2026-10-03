@@ -133,6 +133,10 @@ value() { VALUES+=("$1|$2"); }
 
 now="$(date +%s)"
 
+if [ -n "$DATA_DIR" ] && ! node_serves_deployment "$NODE_URL" "$DATA_DIR" "$NETWORK" 2>/dev/null; then
+    finding critical wrong_chain "the node on $NODE_URL is a different chain from $DATA_DIR; every number below is about the wrong network"
+fi
+
 status="$(http_ok "$NODE_URL/api/v1/status" || true)"
 if [ -z "$status" ]; then
     finding critical node_down "the node does not answer on $NODE_URL"

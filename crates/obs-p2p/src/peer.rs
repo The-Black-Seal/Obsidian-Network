@@ -133,6 +133,11 @@ pub enum PeerEvent {
         node_key: [u8; 32],
         /// Address of the peer.
         addr: SocketAddr,
+        /// The address this node dialled, when it was the initiator.  `addr` is
+        /// where the peer turned out to be — a wildcard or a name resolves to
+        /// something else — so a dialer that keys its bookkeeping by the address
+        /// it asked for needs this one to clear it.
+        dialed: Option<SocketAddr>,
         /// Handle for sending messages.
         handle: Box<ConnectionHandle>,
         /// Bytes received during the handshake.
@@ -160,6 +165,8 @@ pub enum PeerEvent {
     Rejected {
         /// Address that failed.
         addr: SocketAddr,
+        /// The address this node dialled, when it was the initiator.
+        dialed: Option<SocketAddr>,
         /// True when the peer dialled us.
         inbound: bool,
         /// Why.
@@ -173,6 +180,7 @@ pub enum PeerEvent {
 ///
 /// The caller is expected to be a dedicated thread: this function blocks for the
 /// lifetime of the connection.
+#[allow(clippy::too_many_arguments)]
 pub fn run_connection(
     mut stream: TcpStream,
     config: PeerConfig,
@@ -181,12 +189,14 @@ pub fn run_connection(
     shutdown: Arc<AtomicBool>,
     head: Hash32,
     height: u64,
+    dialed: Option<SocketAddr>,
 ) {
     let peer_addr = match stream.peer_addr() {
         Ok(addr) => addr,
         Err(error) => {
             let _ = events.send(PeerEvent::Rejected {
                 addr: "0.0.0.0:0".parse().expect("valid address"),
+                dialed,
                 inbound: role == Role::Responder,
                 reason: DisconnectReason::Io(error.to_string()),
                 protocol_violation: false,
@@ -216,6 +226,7 @@ pub fn run_connection(
             };
             let _ = events.send(PeerEvent::Rejected {
                 addr: peer_addr,
+                dialed,
                 inbound: role == Role::Responder,
                 reason,
                 protocol_violation: error.is_protocol_violation(),
@@ -242,6 +253,7 @@ pub fn run_connection(
         Err(error) => {
             let _ = events.send(PeerEvent::Rejected {
                 addr: peer_addr,
+                dialed,
                 inbound: role == Role::Responder,
                 reason: DisconnectReason::Io(error.to_string()),
                 protocol_violation: false,
@@ -254,6 +266,7 @@ pub fn run_connection(
         Err(error) => {
             let _ = events.send(PeerEvent::Rejected {
                 addr: peer_addr,
+                dialed,
                 inbound: role == Role::Responder,
                 reason: DisconnectReason::Io(error.to_string()),
                 protocol_violation: false,
@@ -267,6 +280,7 @@ pub fn run_connection(
         .send(PeerEvent::Connected {
             node_key,
             addr: peer_addr,
+            dialed,
             handle: Box::new(ConnectionHandle {
                 info: info.clone(),
                 outbound,

@@ -412,7 +412,29 @@ pub struct Node {
     syncing: BTreeMap<[u8; 32], u64>,
     /// When this node last produced a block.
     last_block_at: Option<Instant>,
+    /// Configured peers, and the state of the last attempt to reach each one.
+    ///
+    /// `--peer` used to be a one-shot dial at startup.  A peer that was down
+    /// when this node started, or that restarted an hour later, was never tried
+    /// again: the two nodes stayed apart until somebody restarted one by hand,
+    /// which on a two-host testnet looks exactly like a chain that has stopped.
+    redial: BTreeMap<SocketAddr, RedialState>,
 }
+
+/// The backoff for re-dialling one configured peer.
+#[derive(Debug, Clone, Copy)]
+struct RedialState {
+    /// When the last attempt was made.
+    last: Instant,
+    /// How long to wait before the next one.
+    wait: Duration,
+}
+
+/// The first re-dial happens this long after a peer was found missing.
+const REDIAL_MIN: Duration = Duration::from_secs(2);
+/// The backoff stops doubling here: a peer gone for a day is dialled once a
+/// minute, not forty thousand times.
+const REDIAL_MAX: Duration = Duration::from_secs(60);
 
 impl Node {
     /// Opens or creates a node.
@@ -454,11 +476,10 @@ impl Node {
             pending_attestations: Vec::new(),
             syncing: BTreeMap::new(),
             last_block_at: None,
+            redial: BTreeMap::new(),
         };
         node.peers.set_status(node.store.head(), node.store.height());
-        for addr in node.config.peers.clone() {
-            node.peers.connect(addr);
-        }
+        node.redial_configured_peers();
         if let Some(gap) = node.genesis_epoch_gap() {
             node.events.push(gap);
         }
@@ -663,9 +684,51 @@ impl Node {
             }
         }
         self.mempool.expire(self.protocol_time());
+        self.redial_configured_peers();
         self.peers
             .set_status(self.store.head(), self.store.height());
         outcome
+    }
+
+    /// Dials each configured peer that is not connected, respecting a backoff.
+    ///
+    /// Called every step (the loop runs at tens of milliseconds), so the
+    /// bookkeeping matters: an address is only dialled when its wait has
+    /// elapsed, and the wait doubles up to [`REDIAL_MAX`] while the peer stays
+    /// away.  A peer that answers gets its backoff reset, so a flapping peer
+    /// recovers quickly and a long-dead one costs one packet a minute.
+    fn redial_configured_peers(&mut self) {
+        if self.config.peers.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        // A configured peer is considered reachable when a connection exists to
+        // the same *port*.  The address cannot be compared literally: an
+        // operator configures `host:port` or `0.0.0.0:port`, and the connection
+        // records the address the peer turned out to be at, so `0.0.0.0:37000`
+        // and `127.0.0.1:37000` are the same peer and are not equal.  The port
+        // is the part that identifies the service.
+        let connected: Vec<u16> = self.peers.peers().iter().map(|peer| peer.addr.port()).collect();
+        for address in self.config.peers.clone() {
+            if connected.contains(&address.port()) {
+                self.redial.remove(&address);
+                continue;
+            }
+            // A banned address is a decision, not an accident: do not dial it.
+            if self.peers.is_banned_ip(address.ip()) {
+                continue;
+            }
+            let state = self.redial.entry(address).or_insert(RedialState {
+                last: now - REDIAL_MIN,
+                wait: REDIAL_MIN,
+            });
+            if now.duration_since(state.last) < state.wait {
+                continue;
+            }
+            self.peers.connect(address);
+            state.last = now;
+            state.wait = (state.wait * 2).min(REDIAL_MAX);
+        }
     }
 
     /// Runs the node loop until `shutdown` is set.

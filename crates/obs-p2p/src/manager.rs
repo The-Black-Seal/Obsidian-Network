@@ -13,7 +13,7 @@
 //!   handshake, keyed by node identity *and* by IP address;
 //! * a heartbeat that pings idle peers and drops silent ones.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -100,7 +100,7 @@ pub struct PeerManager {
     node_bans: BTreeMap<[u8; 32], Instant>,
     ip_bans: BTreeMap<IpAddr, Instant>,
     inbound_by_ip: HashMap<IpAddr, usize>,
-    dialing: HashSet<SocketAddr>,
+    dialing: BTreeMap<SocketAddr, Instant>,
     known_addrs: BTreeMap<[u8; 32], SocketAddr>,
     ping_counter: u64,
     shutdown: Arc<AtomicBool>,
@@ -131,7 +131,7 @@ impl PeerManager {
             node_bans: BTreeMap::new(),
             ip_bans: BTreeMap::new(),
             inbound_by_ip: HashMap::new(),
-            dialing: HashSet::new(),
+            dialing: BTreeMap::new(),
             known_addrs: BTreeMap::new(),
             ping_counter: 0,
             shutdown,
@@ -219,10 +219,33 @@ impl PeerManager {
         }
     }
 
+    /// How long a dial may stay unanswered before it is forgotten.
+    ///
+    /// Wall-clock generous relative to `connect_timeout`: this is not a
+    /// deadline, it is a leak detector.
+    fn dial_expiry(&self) -> Duration {
+        self.config.connect_timeout * 4
+    }
+
+    /// Forgets dials that never reported an outcome, so a lost event cannot
+    /// make an address permanently un-dialable.
+    fn expire_dials(&mut self) {
+        let now = Instant::now();
+        let expiry = self.dial_expiry();
+        self.dialing
+            .retain(|_, started| now.duration_since(*started) < expiry);
+    }
+
     /// Dials a peer, unless it is already connected, already being dialled, or
     /// banned.
+    ///
+    /// The address is the one the operator gave.  Callers that re-dial on a
+    /// timer should expect the *connection* to record wherever the peer turned
+    /// out to be, which is why this method — and not the caller — decides
+    /// whether a dial is already in flight.
     pub fn connect(&mut self, addr: SocketAddr) {
-        if self.dialing.contains(&addr) || self.handles.len() >= self.config.max_peers {
+        self.expire_dials();
+        if self.dialing.contains_key(&addr) || self.handles.len() >= self.config.max_peers {
             return;
         }
         if self
@@ -236,7 +259,7 @@ impl PeerManager {
         if self.handles.values().any(|handle| handle.info.addr == addr) {
             return;
         }
-        self.dialing.insert(addr);
+        self.dialing.insert(addr, Instant::now());
         let config = self.config.clone();
         let events = self.events_tx.clone();
         let shutdown = Arc::clone(&self.shutdown);
@@ -250,6 +273,7 @@ impl PeerManager {
                     Err(error) => {
                         let _ = events.send(PeerEvent::Rejected {
                             addr,
+                            dialed: Some(addr),
                             inbound: false,
                             reason: DisconnectReason::Io(error.to_string()),
                             protocol_violation: false,
@@ -261,7 +285,16 @@ impl PeerManager {
                     Ok(status) => (status.head, status.height),
                     Err(_) => (Hash32::ZERO, 0),
                 };
-                peer::run_connection(stream, config, Role::Initiator, events, shutdown, head, height);
+                peer::run_connection(
+                    stream,
+                    config,
+                    Role::Initiator,
+                    events,
+                    shutdown,
+                    head,
+                    height,
+                    Some(addr),
+                );
             });
     }
 
@@ -426,6 +459,7 @@ impl PeerManager {
                                 shutdown,
                                 head,
                                 height,
+                                None,
                             );
                         });
                     if spawned.is_err() {
@@ -444,10 +478,20 @@ impl PeerManager {
             PeerEvent::Connected {
                 node_key,
                 addr,
+                dialed,
                 handle,
                 ..
             } => {
+                // `addr` is where the peer turned out to be; `dialed` is what
+                // this node dialled.  They differ whenever the configured
+                // address was a wildcard or a name (0.0.0.0:port resolves to
+                // 127.0.0.1:port), and removing only the first left the second
+                // in the dial set for ever: the peer was connected, and the
+                // node would never dial it again if it went away.
                 self.dialing.remove(&addr);
+                if let Some(dialed) = dialed {
+                    self.dialing.remove(dialed);
+                }
                 if self.is_banned(&node_key) {
                     handle.close();
                     return;
@@ -518,11 +562,15 @@ impl PeerManager {
             }
             PeerEvent::Rejected {
                 addr,
+                dialed,
                 inbound,
                 protocol_violation,
                 ..
             } => {
                 self.dialing.remove(addr);
+                if let Some(dialed) = dialed {
+                    self.dialing.remove(dialed);
+                }
                 if *inbound {
                     self.release_ip(addr.ip());
                 }

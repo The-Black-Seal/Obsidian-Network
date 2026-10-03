@@ -366,6 +366,10 @@ stage_verify() {
     local ui_url="http://127.0.0.1:$UI_PORT"
     local failures=0
 
+    if ! node_serves_deployment "$node_url" "$DEPLOY_DIR" "$NETWORK"; then
+        warn "verify: the node is not serving this deployment's chain"
+        return 1
+    fi
     if ! status="$(http_ok "$node_url/api/v1/status")"; then
         warn "verify: the node is not answering on $node_url"
         return 1
