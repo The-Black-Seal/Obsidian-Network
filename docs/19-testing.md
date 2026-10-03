@@ -12,7 +12,7 @@
 | Browser-path | `web/tests/*.test.mjs` | The real interface, booted against a live chain, driving the real wasm wallet |
 | Acceptance | `scripts/acceptance.sh` | 100 numbered checks over the whole system, end to end |
 
-Current counts: **357 Rust tests**, **15 JavaScript tests**, **100 acceptance
+Current counts: **358 Rust tests**, **15 JavaScript tests**, **100 acceptance
 checks**.
 
 ## What the tests specifically refuse to assume
@@ -58,7 +58,7 @@ rule the harnesses are built to satisfy, and it was learned the hard way.
   rules it is checking are still checked exactly once, on a connection that was
   established.
 
-Three consecutive full-workspace runs under ten CPU spinners pass — 357 tests,
+Three consecutive full-workspace runs under ten CPU spinners pass — 358 tests,
 no failures — and they are the gate for any change to a harness.
 
 ## Invariants with dedicated tests
@@ -83,7 +83,7 @@ no failures — and they are the gate for any change to a harness.
 
 ```sh
 export PATH=/opt/rust/bin:$PATH CARGO_HOME=/opt/cargo CARGO_NET_OFFLINE=true
-cargo test --workspace                                   # 357 tests
+cargo test --workspace                                   # 358 tests
 bash scripts/build-web.sh --check                        # artifact matches source
 node --test web/tests/format.test.mjs \
              web/tests/wallet-module.test.mjs \

@@ -775,6 +775,68 @@ fn the_official_logo_is_fetched_server_side_and_never_hotlinked() {
     assert!(!printed.contains("private.example"), "a source must not be printable");
 }
 
+/// The operator's own copy of the mark, put in the static directory.
+///
+/// Two things are pinned here.  The route is `/assets/logo-official.png`
+/// whatever the file's extension is — the service serves the candidate that
+/// exists, so an SVG mark works without the page changing — and a file wins
+/// over a configured source, which is what lets a deployment show the mark
+/// while offline.  The order of the candidates is what makes the exact raster
+/// replace a rendering of it: install `logo-official.png` and it is served.
+#[test]
+fn a_mark_in_the_static_directory_is_served_from_this_origin() {
+    let dir = temp_dir("static-mark");
+    let assets = dir.join("assets");
+    std::fs::create_dir_all(&assets).unwrap();
+    let svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 8 8\"><rect width=\"8\" height=\"8\"/></svg>";
+    std::fs::write(assets.join("logo-official.svg"), svg).unwrap();
+
+    let static_dir = dir.display().to_string();
+    let harness = Harness::launch_with(move |config| {
+        config.static_dir = Some(static_dir);
+        // A source is configured as well, and must still lose to the file.
+        config.logo_source = Some(obs_app::logo::LogoSource::new(
+            "http://127.0.0.1:1/logo.png",
+        ));
+    });
+
+    let response: ClientResponse = harness
+        .client()
+        .get(&harness.url("/assets/logo-official.png"))
+        .expect("the service answers");
+    assert_eq!(response.status.code(), 200);
+    assert_eq!(response.body, svg, "the file in the static directory is the mark");
+    assert_eq!(
+        response
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+            .map(|(_, value)| value.as_str()),
+        Some("image/svg+xml"),
+        "the media type follows the file, not the route's name"
+    );
+    assert_eq!(
+        obs_app::logo::installed_file(&dir.display().to_string())
+            .map(|(path, _)| path.file_name().unwrap().to_string_lossy().to_string()),
+        Some("logo-official.svg".to_string()),
+        "and the operator-facing report names the same file"
+    );
+
+    // The exact image, installed beside the drawing, takes precedence.
+    let png = [0x89u8, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x01];
+    std::fs::write(assets.join("logo-official.png"), png).unwrap();
+    let response: ClientResponse = harness
+        .client()
+        .get(&harness.url("/assets/logo-official.png"))
+        .expect("the service answers");
+    assert_eq!(response.body, png, "the raster replaces the drawing");
+    assert_eq!(
+        obs_app::logo::installed_file(&dir.display().to_string())
+            .map(|(path, _)| path.file_name().unwrap().to_string_lossy().to_string()),
+        Some("logo-official.png".to_string())
+    );
+}
+
 #[test]
 fn a_logo_source_that_is_not_an_image_degrades_to_the_drawn_mark() {
     let (port, _hits) = stand_in_logo_host(b"<html>a login page</html>".to_vec(), "text/html");

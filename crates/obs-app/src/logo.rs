@@ -127,12 +127,9 @@ impl Logo {
     pub fn serve(&self, static_dir: Option<&str>) -> Response {
         // 1. A file on disk.  An operator who has the image needs no network, and
         //    what they put in their own directory wins over anything fetched.
-        if let Some(dir) = static_dir {
-            for (name, content_type) in CANDIDATE_FILES {
-                let path = std::path::Path::new(dir).join("assets").join(name);
-                if let Ok(bytes) = std::fs::read(&path) {
-                    return image(bytes, content_type);
-                }
+        if let Some((path, content_type)) = installed_file(static_dir.unwrap_or("")) {
+            if let Ok(bytes) = std::fs::read(&path) {
+                return image(bytes, content_type);
             }
         }
 
@@ -239,6 +236,26 @@ impl Logo {
 }
 
 /// Files an operator may drop into `web/assets/`, most specific first.
+/// The mark a static directory actually serves, if it has one.
+///
+/// The same candidates [`Logo::serve`] prefers, in the same order, so an
+/// operator reading the startup line and a browser asking [`LOGO_PATH`] never
+/// disagree about which file is the mark.  The order matters: a PNG wins over
+/// the drawn SVG, which is how the exact image replaces a rendering of it.
+pub fn installed_file(static_dir: &str) -> Option<(std::path::PathBuf, &'static str)> {
+    if static_dir.is_empty() {
+        return None;
+    }
+    CANDIDATE_FILES.iter().find_map(|(name, content_type)| {
+        let path = std::path::Path::new(static_dir).join("assets").join(name);
+        if path.is_file() {
+            Some((path, *content_type))
+        } else {
+            None
+        }
+    })
+}
+
 const CANDIDATE_FILES: &[(&str, &str)] = &[
     ("logo-official.png", "image/png"),
     ("logo-official.svg", "image/svg+xml"),

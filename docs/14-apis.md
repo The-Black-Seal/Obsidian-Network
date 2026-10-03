@@ -94,9 +94,13 @@ nothing else in a page has to know where a mark comes from.
 A deployment may take the image from either of two places:
 
 * a file, `web/assets/logo-official.<png|svg|webp|jpg>` — installed with
-  `bash scripts/sync-logo.sh <url>` on a machine that can reach the source, and
-  committed; the provenance file next to it records the hash, media type, size and
-  date;
+  `bash scripts/sync-logo.sh <url>` (or `<file>`) on a machine that can reach the
+  source, and committed; the provenance file next to it records where the bytes
+  came from — an operator-supplied link or file, or that the image was drawn in
+  this repository — plus the hash, media type, size and date. The candidates are
+  tried in order, PNG first: installing `logo-official.png` replaces a drawing
+  named `logo-official.svg` with no other change, and the route's name stays
+  `/assets/logo-official.png` either way, so no page ever has to be edited;
 * a source URL, `obs-app --logo-source <url>` or `OBSIDIAN_LOGO_URL` — which the
   service fetches **server-side**, caches for an hour and serves to visitors.
 

@@ -326,14 +326,14 @@ fn main() -> ExitCode {
     println!("obs-app: api keys        {}", if app.config().require_key { "required for reads" } else { "optional for reads" });
     println!(
         "obs-app: official logo   {}",
+        // A file in the static directory wins, so name the one actually there —
+        // the served candidates are `logo-official.*`, and reporting a `.png`
+        // that does not exist would send an operator looking for the wrong file.
         match (&app.config().static_dir, &app.config().logo_source) {
-            // A file in the static directory wins, so say so when one is there.
-            (Some(dir), _) if std::path::Path::new(dir)
-                .join("assets")
-                .join("logo-official.png")
-                .is_file() =>
-            {
-                "web/assets/logo-official.png".to_string()
+            (Some(dir), _) if obs_app::logo::installed_file(dir).is_some() => {
+                obs_app::logo::installed_file(dir)
+                    .map(|(path, _)| path.display().to_string())
+                    .unwrap_or_default()
             }
             (_, Some(_)) => "from the configured source (never sent to a browser)".to_string(),
             _ => "none; the interface uses its drawn mark".to_string(),
