@@ -1,0 +1,18 @@
+[package]
+name = "obs-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Obsidian Network application layer: the Explorer indexer and its privacy contract, the Developer Portal, and the API that serves both"
+
+[dependencies]
+obs-crypto = { workspace = true }
+obs-primitives = { workspace = true }
+obs-chain = { workspace = true }
+obs-rpc = { workspace = true }
+obs-wallet = { workspace = true }
+obs-gateway = { workspace = true }
+
+[dev-dependencies]
+obs-node = { workspace = true }

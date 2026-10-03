@@ -3,6 +3,19 @@
 version = 4
 
 [[package]]
+name = "obs-app"
+version = "1.0.0"
+dependencies = [
+ "obs-chain",
+ "obs-crypto",
+ "obs-gateway",
+ "obs-node",
+ "obs-primitives",
+ "obs-rpc",
+ "obs-wallet",
+]
+
+[[package]]
 name = "obs-chain"
 version = "1.0.0"
 dependencies = [

@@ -641,24 +641,30 @@ fn two_nodes_sync_blocks_over_real_tcp_peers() {
     assert!(target_height >= 200, "the miner advanced protocol time: {}", target_height);
     assert_eq!(miner.with(|node| node.head_state().total_claims), 2);
 
+    // The miner keeps producing while the follower catches up, so the assertion
+    // is on the *prefix* the follower was asked to reach, not on the head: the
+    // follower must have applied the miner's block at that exact height.  Block
+    // hashes commit to the header, and the header carries the state root, so
+    // equal hashes at a height mean equal state there — the stronger claim.
     assert!(
         wait_until(Duration::from_secs(30), || {
-            follower.with(|node| node.head()) == target_head
+            follower.with(|node| node.height() >= target_height)
         }),
-        "the follower reached the miner's head: follower height {} target {}",
-        follower.with(|node| node.height()),
-        target_height
-    );
-    assert_eq!(
-        follower.with(|node| node.head_state().state_root()),
-        target_state_root,
-        "the follower's state matches the miner's root"
-    );
-    assert_eq!(
-        follower.with(|node| node.height()),
+        "the follower reached the target height {}: follower at {}",
         target_height,
-        "the follower is at the same height"
+        follower.with(|node| node.height())
     );
+    assert_eq!(
+        follower.with(|node| node.canonical_hash(target_height)),
+        Some(target_head),
+        "the follower's block at the target height is the miner's block"
+    );
+    assert_eq!(
+        follower.with(|node| node.head_state().total_claims),
+        2,
+        "and it applied the same claims"
+    );
+    let _ = target_state_root;
 }
 
 fn register_account_in(node: &Running, key: &Keypair, name: &str) {

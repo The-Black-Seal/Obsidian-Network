@@ -18,6 +18,7 @@ members = [
     "crates/obs-node",
     "crates/obs-wallet",
     "crates/obs-gateway",
+    "crates/obs-app",
 ]
 
 [workspace.package]
