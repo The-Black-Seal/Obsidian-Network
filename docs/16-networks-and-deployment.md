@@ -100,6 +100,51 @@ A minimal production-shaped deployment:
   `OBSIDIAN_LOGO_URL`. Either way the page references one relative path, the
   browser never contacts the mark's origin, and the repository never records it.
 
+## Termux: a node on a phone
+
+A full node, a validator and the interface run on an Android phone under
+[Termux](https://termux.dev). Nothing here needs a service the phone lacks: the
+workspace builds with **zero third-party crates**, the store is a single
+append-only file, and the only network traffic is peers the operator names. It is
+a useful way to carry a devnet in a pocket, and — because a phone is a machine
+someone actually leaves running — a reasonable way to keep a small testnet
+validator online.
+
+```sh
+pkg update -y && pkg upgrade -y
+pkg install -y rust git curl binutils     # clang too, if the linker complains
+git clone -b arena/01a0fe6f-obsidian-network \
+    https://github.com/The-Black-Seal/Obsidian-Network.git
+cd Obsidian-Network
+termux-wake-lock                          # keep it alive while you test
+bash scripts/devnet-quickstart.sh         # build (minutes), start, verify
+```
+
+Then open the printed URL (`http://127.0.0.1:8081`) in the phone's browser. The
+first build is the long part — a few minutes of CPU on a phone; every start
+after that is seconds.
+
+* **Storage.** Keep the data directory under `$HOME`
+  (`~/obsidian-devnet` is the default). `/sdcard` is FUSE-mounted and is a bad
+  place for a block log.
+* **Staying alive.** Android kills background processes; `termux-wake-lock` is
+  what stops it, and `termux-wake-unlock` releases it. The lock also survives
+  the screen going off, which is what makes a phone a usable validator.
+* **Ports.** Everything binds above 1024, so no root and no `sudo` is involved.
+  `obs-node` and `obs-app` bind `0.0.0.0`, so another device on the same Wi-Fi can
+  reach the interface at `http://<phone-ip>:8081` — convenient for testing a
+  wallet on a laptop against a phone's chain, and *not* something to leave open on
+  an untrusted network: a devnet peer port accepts connections from anyone who can
+  reach it.
+* **A devnet's keys are development secrets on plain files** (`authority.key`,
+  `founder.keystore.json`, `founder.password.txt`, `founder.phrase.txt`). That is
+  fine for a disposable chain and is never how a real network is run — mainnet
+  keys belong on `0600` files the operator owns, and a real account is created
+  through the registration service with a real invitation.
+* **Updating.** `git pull` and re-run `scripts/devnet-quickstart.sh`: the build is
+  incremental, and a running devnet resumes the chain it has (its genesis record
+  wins over any flag, so a restart cannot silently re-found it).
+
 ## Configuration that matters
 
 | Where | Setting | Why |

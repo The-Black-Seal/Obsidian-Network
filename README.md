@@ -47,9 +47,26 @@ there is no route, flag or code path anywhere that does.
 
 ## Quick start
 
-```sh
-export PATH=/opt/rust/bin:$PATH CARGO_HOME=/opt/cargo CARGO_NET_OFFLINE=true
+One command brings up a whole network — a chain that mines, a validator that
+attests, and the interface — and prints what to open:
 
+```sh
+bash scripts/devnet-quickstart.sh          # build if needed, start, verify
+#   devnet: the devnet is live.
+#   devnet:   open            http://127.0.0.1:8081
+bash scripts/devnet-quickstart.sh status   # height, peers, validators, supply
+bash scripts/devnet-quickstart.sh stop     # stop both processes, keep the chain
+bash scripts/devnet-quickstart.sh reset --yes   # delete it and start over
+```
+
+It is idempotent: running it again resumes the devnet it finds instead of
+founding a second chain, and the founder is registered once. Everything it
+creates lives under `--dir` (default `~/obsidian-devnet`): the authority key,
+the founder's keystore and phrase, the chain, and `node.log`.
+
+The same thing by hand, if you want to see each step:
+
+```sh
 cargo build --workspace --release     # node, gateway, app, cli
 bash scripts/build-web.sh             # the wallet module into web/wasm/
 
@@ -65,10 +82,16 @@ bash scripts/build-web.sh             # the wallet module into web/wasm/
 open http://127.0.0.1:8081            # Mining · Wallet · Explorer · Developers
 ```
 
+### On a phone (Termux)
+
+The same script runs under [Termux](https://termux.dev), because nothing here
+needs a service the phone does not have: no third-party crates, no database, no
+runtime. See [Deployment](docs/16-networks-and-deployment.md#termux-a-node-on-a-phone).
+
 ## Verifying it
 
 ```sh
-cargo test --workspace                        # 345 Rust tests
+cargo test --workspace                        # 358 Rust tests
 bash scripts/build-web.sh --check             # the wasm artifact matches the source
 node --test web/tests/format.test.mjs \
              web/tests/wallet-module.test.mjs \
