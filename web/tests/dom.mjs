@@ -69,9 +69,26 @@ export class Element {
   focus() {}
   querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
   querySelectorAll(selector) {
+    // Four selector shapes, which is all the interface uses: `#id`, `.class`,
+    // `tag`, and `tag.class` (the last one because `img.mark` is how the header's
+    // logo is found).  A shim that supported CSS would stop being a fair test.
     const match = (node) => {
-      if (selector.startsWith('#') && node.getAttribute && node.getAttribute('id') === selector.slice(1)) return true;
-      if (selector.startsWith('.') && String(node.className || '').split(/\s+/).includes(selector.slice(1))) return true;
+      if (selector.startsWith('#')) {
+        return Boolean(node.getAttribute) && node.getAttribute('id') === selector.slice(1);
+      }
+      let tag = null;
+      let rest = selector;
+      const dot = selector.indexOf('.');
+      if (dot > 0) {
+        tag = selector.slice(0, dot).toLowerCase();
+        rest = selector.slice(dot);
+      }
+      if (rest.startsWith('.')) {
+        const wanted = rest.slice(1).split('.').filter(Boolean);
+        const classes = String(node.className || '').split(/\s+/).filter(Boolean);
+        if (!wanted.every((name) => classes.includes(name))) return false;
+        return tag === null || node.tagName === tag;
+      }
       return node.tagName === selector.toLowerCase();
     };
     const found = [];
