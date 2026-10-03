@@ -3,10 +3,13 @@
 # Installs the official logo as a file in this repository.
 #
 #   bash scripts/sync-logo.sh https://<the logo host>/<path>
+#   bash scripts/sync-logo.sh ./some/local/image.png
 #
 # Run this on a machine that can reach the logo's source — a workstation, or a
-# CI job with the URL in a secret.  It fetches the image, checks that it really is
-# one, and writes it to web/assets/logo-official.<ext>.
+# CI job with the URL in a secret.  It takes the image, checks that it really is
+# one, and writes it to web/assets/logo-official.<ext>.  A local file is used as
+# it is, which is the path to use when the image was handed over some way other
+# than a link.
 #
 # The point of doing it this way is what is *not* written down.  The URL is an
 # argument, never a file: after this runs, the repository contains the mark and
@@ -30,31 +33,39 @@ cd "$ROOT"
 
 SOURCE="${1:-${LOGO_URL:-}}"
 if [ -z "$SOURCE" ]; then
-    echo "usage: bash scripts/sync-logo.sh <url>" >&2
+    echo "usage: bash scripts/sync-logo.sh <url|file>" >&2
     echo "   or: LOGO_URL=<url> bash scripts/sync-logo.sh" >&2
     exit 2
 fi
 
-for tool in curl python3; do
-    command -v "$tool" >/dev/null 2>&1 || { echo "sync-logo: $tool is required" >&2; exit 1; }
-done
+command -v python3 >/dev/null 2>&1 || { echo "sync-logo: python3 is required" >&2; exit 1; }
+
+bytes_of() { wc -c < "$1" | tr -d ' '; }
 
 mkdir -p web/assets
 temporary="$(mktemp)"
 trap 'rm -f "$temporary"' EXIT
 
-echo "sync-logo: fetching the mark"
-# --fail so an error page is not saved as a logo; a browser-like Accept so hosts
-# that negotiate on it answer with an image.
-if ! curl --fail --silent --show-error --location --max-time 60 \
-        --user-agent 'obsidian-logo-sync/1.0' \
-        --header 'Accept: image/png,image/svg+xml,image/webp,image/jpeg,image/*;q=0.8' \
-        --output "$temporary" \
-        --write-out 'sync-logo: the host answered %{http_code} %{content_type}, %{size_download} bytes\n' \
-        "$SOURCE"; then
-    echo "sync-logo: the fetch failed; nothing was written" >&2
-    exit 1
+if [ -f "$SOURCE" ]; then
+    # A file the operator already has: no network, no source to record at all.
+    cp "$SOURCE" "$temporary"
+    echo "sync-logo: using $(bytes_of "$temporary") bytes from the file $SOURCE"
+else
+    command -v curl >/dev/null 2>&1 || { echo "sync-logo: curl is required for a URL" >&2; exit 1; }
+    echo "sync-logo: fetching the mark"
+    # --fail so an error page is not saved as a logo; a browser-like Accept so
+    # hosts that negotiate on it answer with an image.
+    if ! curl --fail --silent --show-error --location --max-time 60 \
+            --user-agent 'obsidian-logo-sync/1.0' \
+            --header 'Accept: image/png,image/svg+xml,image/webp,image/jpeg,image/*;q=0.8' \
+            --output "$temporary" \
+            --write-out 'sync-logo: the host answered %{http_code} %{content_type}, %{size_download} bytes\n' \
+            "$SOURCE"; then
+        echo "sync-logo: the fetch failed; nothing was written" >&2
+        exit 1
+    fi
 fi
+
 
 # The file decides the extension, not the URL: a logo host may serve
 # /logo.png as a JPEG, and the page must still get a correct content type.
@@ -99,9 +110,9 @@ PY
 {
     echo "# Provenance of the official mark carried in this repository."
     echo "#"
-    echo "# The bytes below were fetched from a source the operator configured and"
-    echo "# deliberately does not record here: the link is configuration, not source."
-    echo "# What can be checked is the artifact itself."
+    echo "# The bytes below came from a source the operator supplied — a link or a"
+    echo "# file, deliberately not both fetched and written down: the origin is"
+    echo "# configuration, not source. What can be checked is the artifact itself."
     echo "file:        $(basename "$destination")"
     echo "sha256:      $hash"
     echo "bytes:       $size"
