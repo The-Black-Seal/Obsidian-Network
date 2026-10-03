@@ -93,3 +93,36 @@ absolute time and as remaining durations ("next in 3.5 hours"). Those strings ar
 formatted from the chain's own integers; the page's `Date` is used for
 *displaying* the timestamp, never for deciding eligibility. The Mining view says
 so in words: "Eligibility is protocol time, never a browser timer."
+
+## Which clock every value uses
+
+Mixing clocks is how a chain starts fine and then cannot start at all, so the
+project keeps one table of which clock each value obeys. If a value is checked by
+consensus it is **protocol time** (the head block's timestamp); if it is checked
+by a service it is that service's clock and nothing about consensus depends on it.
+
+| Value | Clock | Checked by |
+|-------|-------|-----------|
+| Block timestamp | protocol time, within `[MTP, head + 60]` | consensus (rules 1 and 2) |
+| Claim `claimed_at` | protocol time, declared by the miner | consensus (rule 3) |
+| Invitation authorisation `issued_at` / `expires_at` | **protocol time** — the head block's timestamp, read from the node the deployment follows | consensus (`invite_not_yet_valid`, `invite_expired`) |
+| Validator attestation height and bond deadlines | protocol time | consensus |
+| MTP, slot, PoT Weight, difficulty | protocol time | consensus |
+| Account session, enrolment and invitation records | the registration service's clock | the service only |
+| TOTP step | the verifier's clock (as TOTP requires) | the service only |
+| Test "founded at this moment" (`--genesis-timestamp now`) | the operator's clock, once, at founding | the operator, and every node that joins must be told the value |
+| Interface countdowns and formatting | the browser's clock, for display | nothing |
+
+The authorisation row is the one that used to be wrong, and it is the reason this
+table exists: an authorisation dated with the service's clock is dated **beyond**
+a chain that is behind, and a network's first block — the only block that can
+carry the founder's registration — then can never include it. Authorisations are
+now stamped with the chain's own time, and a deployment that cannot read it
+refuses the step rather than guessing. The test that pins it lives in
+`obs-node` (`a_founder_registering_long_after_the_epoch_still_founds_the_chain`)
+and in `obs-gateway` (`the_invitation_authorisation_is_dated_in_chain_time`).
+
+A client that cannot read the chain's time — the interface before a node answers
+— must not invent one. The browser wallet takes `protocol_time` from the node's
+status, never from `Date.now()`; the mining view's countdowns are display only,
+and the page says so.
