@@ -24,7 +24,7 @@ Deployment under test: devnet (chain id 3), node at height ~1,900, obs-app
 serving the interface, the explorer and the portal on one origin, with the real
 compiled wallet module at `web/wasm/obsidian-wallet.wasm`.
 
-Rust suite: 330 passed, 0 failed. JavaScript suite: 15 passed, 0 failed.
+Rust suite: 345 passed, 0 failed. JavaScript suite: 15 passed, 0 failed.
 
 ## The 100 checks
 
@@ -158,12 +158,54 @@ point of having it:
    every path this service answers, with a test that sends a foreign `Origin` to
    each of them and asserts a `403`.
 
+5. **A registration could be dated beyond the chain's reach, which stranded a
+   new network.** The chain accepts a registration when
+   `authorisation.issued_at <= block time <= expires_at`, and `block time` is
+   protocol time — but the service stamped `issued_at` with its own wall clock.
+   Protocol time advances at most sixty seconds per block, so a founder who
+   reached the registration service ten minutes after the epoch produced a
+   transaction no block could include. On a running chain that is a delay; on a
+   network's **first** block it is a deadlock, because block 1 is the only block
+   that can carry the founder's registration. It was found by founding a devnet
+   and delaying the registration: the chain sat at height 0 with
+   `block_rejected`/`block_proposer` events for ten minutes, and started at
+   height 11 within eight seconds of registering with the fix. Authorisations
+   are now dated in the chain's time — read from the node the deployment follows
+   — and a deployment that cannot establish it refuses with `503
+   chain_time_unknown` rather than minting something the chain may reject.
+
+6. **`obs-cli register` could never finish step six.** Step five returns a TOTP
+   provisioning URI and the enrolment is not complete until a code from it is
+   confirmed; the command issued the secret and then went straight to
+   `register/wallet`, which refuses with `out_of_order`. The command now
+   confirms the enrolment itself, computing a code from the secret it was just
+   given (and stepping to the next window when a request lands near a boundary),
+   and writes the recovery code, the secret and the URI to a `0600` file.
+
 Three further corrections were to the run itself rather than the system: the
 acceptance script had three checks pointed at the wrong source file or looking
 for the wrong words, and it (like the docs) contained the mainnet genesis
 invitation as a literal. The invitation is now assembled at run time from
 fragments so that a search for a secret does not record the secret, and the
 documentation describes the invitation without printing it.
+
+## On a busy machine
+
+The suite must pass on a machine that is doing other things, and one run under
+load said otherwise: three of the `obs-p2p` tests failed intermittently, one of
+them taking 380 seconds to do so. The protocol was right; the harness was
+starving itself. Its poller thread polls in a tight loop, each poll holding the
+manager mutex for the whole timeout, and Rust's `Mutex` promises no fairness, so
+a test thread calling `lock()` could be kept out for seconds — long enough to
+miss a peer's entire lifetime and report a network that never connected. The
+poller now yields after an idle poll, the waiting helpers drive the node from the
+test's own thread with a non-blocking `try_lock`, and deadlines distinguish the
+handshake rule under test (5 s) from the test's patience (120 s). Nothing a test
+asserts was relaxed, and the file went from 130-600 seconds to about four.
+
+Three consecutive full-workspace runs under ten CPU spinners now pass: 345
+tests, no failures each time. The rule this produced is in
+[Testing](19-testing.md#tests-must-not-assume-an-idle-machine).
 
 ## Re-running it
 
