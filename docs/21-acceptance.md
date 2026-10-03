@@ -225,7 +225,8 @@ the point of having it:
    `obs-chain`. On the running devnet the fix is visible end to end: every block
    carries one attestation, the validator record reads `uptime_bp: 9680`,
    `score: 98`, `attestations: 91`, and each block's weight includes the attested
-   bonus (`weight_atoms: 1,001,000`).
+   bonus (`weight_atoms: 1,001,000`). Its proposer credit still read zero at
+   that point — a second, narrower defect, recorded as 14 below.
 
 8. **A restarted node did not come back to its own chain, in two separate
    ways.** Found by restarting the devnet node between acceptance runs:
