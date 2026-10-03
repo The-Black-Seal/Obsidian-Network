@@ -121,6 +121,34 @@ PY
     echo "installed_by: scripts/sync-logo.sh"
 } > web/assets/logo-official.provenance
 
+# The mark also belongs at the top of the documentation, where a reader meets it
+# first.  The banner is inserted once and replaced on later runs, so this script
+# can be re-run whenever the image changes.  Relative paths only: the file is in
+# the repository, so nothing points anywhere else.
+banner() {
+    path="$1"
+    prefix="$2"
+    [ -f "$path" ] || return 0
+    line="<img src=\"${prefix}web/assets/logo-official.png\" alt=\"Obsidian Network\" width=\"88\">"
+    temporary_banner="$(mktemp)"
+    if head -n 1 "$path" | grep -q 'logo-official\.png'; then
+        # Already bannered: replace the line, so a re-run cannot stack banners.
+        {
+            echo "$line"
+            tail -n +2 "$path"
+        } > "$temporary_banner"
+    else
+        {
+            echo "$line"
+            echo
+            cat "$path"
+        } > "$temporary_banner"
+    fi
+    mv "$temporary_banner" "$path"
+}
+banner README.md ""
+banner docs/README.md "../"
+
 # The page already asks for this path; the drawn seal stays as the fallback.
 if ! grep -q 'assets/logo-official.png' web/index.html; then
     echo "sync-logo: web/index.html does not reference assets/logo-official.png" >&2
