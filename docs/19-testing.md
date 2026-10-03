@@ -10,9 +10,9 @@
 | Property | in `obs-chain`, `obs-primitives` | Invariants over many generated inputs |
 | Adversarial | `obs-consensus`, `obs-mempool`, node tests | Reorgs, double-spends, nonce gaps, invalid roots, bad signatures |
 | Browser-path | `web/tests/*.test.mjs` | The real interface, booted against a live chain, driving the real wasm wallet |
-| Acceptance | `scripts/acceptance.sh` | 101 numbered checks over the whole system, end to end |
+| Acceptance | `scripts/acceptance.sh` | 102 numbered checks over the whole system, end to end |
 
-Current counts: **362 Rust tests**, **15 JavaScript tests**, **101 acceptance
+Current counts: **362 Rust tests**, **15 JavaScript tests**, **102 acceptance
 checks**.
 
 ## A test may not assert a property of a random value's spelling

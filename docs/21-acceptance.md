@@ -1,6 +1,6 @@
 # 21 — Acceptance
 
-The acceptance run is `scripts/acceptance.sh`: **101 numbered checks** over the
+The acceptance run is `scripts/acceptance.sh`: **102 numbered checks** over the
 whole system. It exits non-zero if any check fails, so it is a gate, not a report.
 Half the checks read the live deployment over HTTP exactly as a person or a wallet
 would; the other half are the source-level and test-suite gates that prove the
@@ -16,7 +16,7 @@ bash scripts/acceptance.sh
 ```
 Obsidian Network — acceptance run
 interface: http://127.0.0.1:8081   node: http://127.0.0.1:7200
-checks: 101   passed: 101   failed: 0
+checks: 102   passed: 102   failed: 0
 all checks passed
 ```
 
@@ -29,7 +29,7 @@ from the same checkout, which is what check 101 exists to pin down.
 
 Rust suite: 362 passed, 0 failed. JavaScript suite: 15 passed, 0 failed.
 
-## The 101 checks
+## The 102 checks
 
 | # | Check | Result |
 |---|-------|--------|
@@ -134,6 +134,7 @@ Rust suite: 362 passed, 0 failed. JavaScript suite: 15 passed, 0 failed.
 | 99 | the full JavaScript suite passes | pass |
 | 100 | no private key, seed phrase, genesis invitation or logo source is in the tree | pass |
 | 101 | the four networks have their own ports and only test networks publish an invitation | pass |
+| 102 | the operator can mint a genesis invitation, and the code is never echoed back | pass |
 
 ## What the run found
 
@@ -161,6 +162,15 @@ it passed, and its evidence was discarded by a `2>/dev/null` in the check. The
 test now asserts the exact debug form and the absence of the phrase and the keys;
 the check keeps its log and prints the failing test's name. The rule is in
 [Testing](19-testing.md#a-test-may-not-assert-a-property-of-a-random-values-spelling).
+
+A seventeenth, found while writing this document's own instructions: the
+documented way to mint a genesis invitation — `obs-cli invite mint --store … --code
+… --genesis` — was *unusable*, because the CLI read the `invite` command's option
+list from the member-facing `invite issue` and rejected `--store` and `--code` as
+unknown options. The operator's half of the command now takes the operator's
+options, a genesis invitation defaults to a year rather than a month, and check
+102 mints one on a scratch store, proves the commitment landed, and proves the
+code is not echoed back.
 
 
 1. **The interface did not boot.** The page's shell never painted: the app
@@ -418,15 +428,14 @@ no failures each time. The rule this produced is in
 The run expects a live deployment:
 
 ```sh
-./target/debug/obs-node --network devnet --data-dir /tmp/dev2/node --genesis-timestamp now \
-    --authority-key <64 hex> --keystore /tmp/dev2/founder.keystore.json \
-    --keystore-password-file /tmp/dev2/founder.password.txt --mine --validator &
-./target/debug/obs-app --network devnet --node-url http://127.0.0.1:7200 --port 8081 \
-    --static-dir web --store /tmp/dev2/portal.json --accounts \
-    --accounts-store /tmp/dev2/accounts.json --authority-key /tmp/dev2/authority.key &
-./target/debug/obs-cli devnet register --data-dir /tmp/dev2 --password-file /tmp/dev2/founder.password.txt
+bash scripts/quickstart.sh start --dir /tmp/obsidian-devnet --block-interval-ms 1000
 bash scripts/acceptance.sh
 ```
+
+The quickstart founds the network, starts the node and the interface, registers
+the founder and bonds a validator, on the ports the acceptance run expects
+(7200/9220/8081). A deployment that was built by hand is fine too; the run only
+needs a node, an interface and a registered founder somewhere.
 
 `scripts/acceptance.sh` reads `OBSIDIAN_BASE_URL` (default
 `http://127.0.0.1:8081`) and `OBSIDIAN_NODE_URL` (default

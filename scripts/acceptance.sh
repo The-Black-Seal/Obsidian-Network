@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# The acceptance run: 101 numbered checks over the whole system.
+# The acceptance run: 102 numbered checks over the whole system.
 #
 # Half of these are greps and unit-level gates that need nothing running; the
 # other half drive a live devnet over HTTP, exactly as a person or a wallet
@@ -429,6 +429,17 @@ check 101 "the four networks have their own ports and only test networks publish
         ! grep -q "OBS-GENESIS" /tmp/obs-networks.txt &&
         mainnet_line="$(grep "^mainnet" /tmp/obs-networks.txt | grep operator)" &&
         [ -n "$mainnet_line" ]'
+
+check 102 "the operator can mint a genesis invitation, and the code is never echoed back" \
+    bash -c 'store="$(mktemp -u /tmp/obs-invite-XXXXXX.json)"
+        out="$(./target/debug/obs-cli invite mint --network devnet --store "$store" \
+            --code OBS-DEVNET-ACCEPTANCE-102 --genesis 2>&1)" &&
+        printf "%s" "$out" | grep -q "minted a genesis invitation" &&
+        printf "%s" "$out" | grep -q "valid for 31536000" &&
+        ! printf "%s" "$out" | grep -q "OBS-DEVNET-ACCEPTANCE-102" &&
+        grep -q '"hash"' "$store" &&
+        ! grep -q "OBS-DEVNET-ACCEPTANCE-102" "$store" &&
+        rm -f "$store"'
 
 # ---------------------------------------------------------------------------
 

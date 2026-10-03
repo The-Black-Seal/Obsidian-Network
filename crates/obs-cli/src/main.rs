@@ -23,8 +23,13 @@ fn main() -> ExitCode {
     let command = argv[0].clone();
     let rest = &argv[1..];
 
-    // A command's own options, plus the flags every command accepts.
+    // A command's own options, plus the flags every command accepts.  `invite`
+    // has two subcommands with different audiences — `invite issue` is a person
+    // spending their own budget, `invite mint` is the operator's authority — and
+    // checking the subcommand here is what makes `--store` and `--code` legal for
+    // the second without being silently accepted by the first.
     let options: Vec<&'static str> = match command.as_str() {
+        "invite" if sub(&argv) == Some("mint") => operator::OPTIONS.to_vec(),
         "status" | "supply" | "mining" | "params" | "block" | "tx" | "blocks"
         | "validators" | "mempool" | "peers" | "events" | "search" | "networks" => {
             network::OPTIONS.to_vec()

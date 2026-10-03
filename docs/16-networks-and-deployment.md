@@ -53,24 +53,18 @@ the artifact at `web/wasm/obsidian-wallet.wasm`, and writes
 `--check` form rebuilds and compares byte-for-byte, so the module in the tree is
 provably the one the source produces.
 
-## Devnet in one command
+## A network in one command
 
 ```sh
-./target/release/obs-cli devnet init --data-dir /var/lib/obsidian/devnet \
-    --password-file /etc/obsidian/founder.password
-./target/release/obs-node --network devnet --data-dir /var/lib/obsidian/devnet/node \
-    --genesis-timestamp now --authority-key <authority public key, 64 hex> \
-    --keystore /var/lib/obsidian/devnet/founder.keystore.json \
-    --keystore-password-file /etc/obsidian/founder.password --mine --validator
-./target/release/obs-cli devnet register --data-dir /var/lib/obsidian/devnet \
-    --password-file /etc/obsidian/founder.password
+bash scripts/quickstart.sh start --network devnet   # or testnet, staging, mainnet
 ```
 
-`devnet init` writes the authority key, the founder's wallet, its phrase and its
-password (all `0600` except the phrase, which is `0600` too). It needs no running
-node; `devnet register` submits the founding registration and is safe to re-run.
-The first block carries that registration and the founder's first claim — the
-genesis claim.
+`devnet init` — which the quickstart calls for you — writes the authority key,
+the founder's wallet, its phrase and its password, all `0600`. It needs no
+running node; `devnet register` submits the founding registration and is safe to
+re-run. The first block carries that registration and the founder's first claim:
+the genesis claim, which is the one-time 100,000 OBS allocation to the treasury
+wallet.
 
 ## Each network, by hand
 

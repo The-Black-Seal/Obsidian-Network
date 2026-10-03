@@ -85,8 +85,13 @@ pub fn invite_mint(context: &Context, args: &Args) -> Result<(), CliError> {
         })?
         .to_string();
     let genesis = args.flag("genesis");
+    // A network invitation lives for a month; a genesis invitation is the one a
+    // network is founded with, and an operator may hold it for a while before
+    // the founding, so it defaults to a year — the same defaults the service
+    // itself uses for the two kinds.
+    let default_expiry = if genesis { 365 * 24 * 3_600 } else { 30 * 24 * 3_600 };
     let expires_in = args
-        .number("expires-in", 30 * 24 * 3_600)
+        .number("expires-in", default_expiry)
         .map_err(|error| CliError::Usage(error.to_string()))?;
     let store = obs_gateway::store::AtomicStore::open(&store_path, true)
         .map_err(|error| CliError::Failed(error.to_string()))?;
