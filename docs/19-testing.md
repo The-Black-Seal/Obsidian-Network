@@ -28,6 +28,39 @@ checks**.
 * **A skip is a skip.** The browser test skips when no deployment is running and
   says so; it never reports a silent pass.
 
+## Tests must not assume an idle machine
+
+The suite binds real sockets, runs real threads and is expected to pass on a
+machine that is busy with something else — a laptop running the developer's
+editor, or CI running four jobs at once. That expectation is not a hope: it is a
+rule the harnesses are built to satisfy, and it was learned the hard way.
+
+* **A wait has a generator, not just a deadline.** A test that waits for the node
+  to observe something drives the node's own loop from the test's thread
+  (`settle`, a non-blocking `try_lock` poll) instead of assuming a background
+  thread will be scheduled. A test about a peer being dropped once missed the
+  peer's entire two-second lifetime — because the poller thread held the manager
+  mutex in a hot loop and the test thread could not get it — and reported a
+  network that never connected.
+* **A hot loop yields.** The p2p harness's poller sleeps a millisecond after an
+  idle poll. Holding a mutex for the length of a poll timeout and immediately
+  re-acquiring it starves every other waiter: Rust's `Mutex` makes no fairness
+  promise. With the yield, the p2p file went from 130–600 seconds to about four.
+* **Deadlines are named for what they are.** `HANDSHAKE_TIMEOUT` (5 s) is a rule
+  under test; `HANDSHAKE_DEADLINE` (120 s) is the test's own patience. Conflating
+  them either makes the suite slow or turns a rule into a coin toss.
+* **Heartbeats do not decide application assertions.** A node probes idle peers
+  on its own timer, so a ping or a pong can arrive between any two messages. The
+  waits that assert on application traffic skip them rather than assume the next
+  message is theirs.
+* **A retry is for a busy machine, not for a broken one.** Where a test must
+  complete a handshake before it can test anything, it retries; the protocol
+  rules it is checking are still checked exactly once, on a connection that was
+  established.
+
+Three consecutive full-workspace runs under ten CPU spinners pass — 345 tests,
+no failures — and they are the gate for any change to a harness.
+
 ## Invariants with dedicated tests
 
 | Invariant | Test |
