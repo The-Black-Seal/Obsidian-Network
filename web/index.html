@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Obsidian Network</title>
+<meta name="description" content="Obsidian Network: Proof of Time consensus, Obsidian Seal Coin (OBS). Mining, wallet, explorer and developer portal.">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="css/app.css">
+<!--
+  One page, four products, no build step and no third-party script.
+
+  Everything that decides something — the wallet's keys, a signature, a fee, an
+  address — is Rust, compiled to WebAssembly (wasm/obsidian-wallet.wasm) and
+  called through js/wasm.js.  The JavaScript here renders and asks; it never
+  derives a key and never decides what a transaction says.
+-->
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="top">
+  <div class="wrap top-inner">
+    <a class="brand" href="#/">
+      <img src="assets/logo.svg" alt="" width="34" height="34">
+      <span class="brand-name">Obsidian<em>Network</em></span>
+    </a>
+    <nav class="main-nav" aria-label="Products">
+      <a href="#/mining" data-nav="mining">Mining</a>
+      <a href="#/wallet" data-nav="wallet">Wallet</a>
+      <a href="#/explorer" data-nav="explorer">Explorer</a>
+      <a href="#/developers" data-nav="developers">Developers</a>
+    </nav>
+    <div class="net" id="net-badge" title="The network this interface is connected to">
+      <span class="dot" aria-hidden="true"></span><span id="net-name">connecting…</span>
+    </div>
+  </div>
+</header>
+
+<div class="banner" id="offline" hidden role="status">
+  <strong>The node is not answering.</strong>
+  <span id="offline-detail">This interface reads a node; without one it can show nothing.
+  Start a node and reload — the interface never invents chain data.</span>
+</div>
+
+<main id="main" class="wrap" tabindex="-1"></main>
+
+<footer class="bottom">
+  <div class="wrap">
+    <p class="facts" id="protocol-facts">
+      Loading the protocol's constants from the chain…
+    </p>
+    <p class="fine">
+      Obsidian Seal Coin (OBS) · maximum supply 21,000,000 OBS · proof of time, not proof of work ·
+      consensus is Rust and always authoritative: this interface can ask, and can sign with your own
+      key, but it can never move value, change a balance or alter a protocol rule.
+    </p>
+  </div>
+</footer>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

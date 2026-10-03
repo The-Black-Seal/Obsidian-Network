@@ -1,0 +1,9 @@
+Built from crates/obs-wasm by scripts/build-web.sh.
+Target: wasm32-unknown-unknown
+Size:   283352 bytes
+SHA-256: 2227635b7e112481d56e568f137a253a20bf28b25fa9273775cdb9d52da47586
+
+This is a compiled artifact committed so that the interface works on a
+checkout with no toolchain.  Rebuild it with scripts/build-web.sh; the
+source of truth is the Rust in crates/obs-wasm, crates/obs-wallet and
+crates/obs-crypto.

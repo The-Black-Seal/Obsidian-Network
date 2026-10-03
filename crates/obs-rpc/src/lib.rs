@@ -27,6 +27,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod cli;
 pub mod client;
 pub mod http;
 pub mod server;

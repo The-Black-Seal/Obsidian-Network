@@ -19,6 +19,8 @@ members = [
     "crates/obs-wallet",
     "crates/obs-gateway",
     "crates/obs-app",
+    "crates/obs-cli",
+    "crates/obs-wasm",
 ]
 
 [workspace.package]
@@ -41,6 +43,7 @@ obs-wallet = { path = "crates/obs-wallet" }
 obs-app = { path = "crates/obs-app" }
 obs-gateway = { path = "crates/obs-gateway" }
 obs-cli = { path = "crates/obs-cli" }
+obs-wasm = { path = "crates/obs-wasm" }
 
 [profile.release]
 opt-level = 3

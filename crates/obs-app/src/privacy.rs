@@ -75,6 +75,79 @@ pub struct Route {
 /// Anything not listed here does not exist.  In particular there is no route
 /// that returns an account's balance, and no route that proxies the node's API
 /// verbatim — a proxy would inherit the node's own, differently-scoped surface.
+/// The node read paths this service forwards, and the prefix they live under.
+///
+/// A browser needs one origin.  The explorer's own API is served here, but the
+/// chain's live state — height, protocol time, mempool, the mining parameters —
+/// lives on a node, and a page cannot read a second origin unless that origin
+/// says so with CORS headers.  So the application serves a *read-through*:
+/// `GET /node/api/v1/...`, restricted to the paths below.
+///
+/// What is deliberately not in the list is the point of the list.  There is no
+/// `account/proof` here, so an account's balance cannot be read through this
+/// origin by anyone — the one endpoint that answers a balance question requires a
+/// signature from the account's own key, and a browser reaches it only if the
+/// operator publishes the node directly.  Everything else in the list is public
+/// chain data that the node already serves to anyone who asks.
+///
+/// The read-through is a convenience, not an authority: it cannot write, it
+/// cannot sign, and every response still passes through [`scrub`], so a node
+/// answer that ever grew a forbidden field would become a refusal here rather
+/// than a leak.
+pub const NODE_READ_PREFIX: &str = "/node";
+
+/// Node API paths a deployment may read through this service.  Exact paths and
+/// `*`-suffixed prefixes, all under `/api/v1/`.
+pub const NODE_READ_PATHS: &[&str] = &[
+    "status",
+    "supply",
+    "params",
+    "mining",
+    "blocks",
+    "blocks/*",
+    "transactions/*",
+    "validators",
+    "mempool",
+    "peers",
+    "events",
+];
+
+/// The node paths this service will forward a `POST` to.
+///
+/// Two, and both are safe for the same reason: the application holds no key and
+/// cannot sign, so it can only carry a request that is already authenticated.
+///
+/// * `transactions` — submitting a signed transaction.  This is the only way a
+///   transaction reaches a node, and a single-origin deployment is unusable
+///   without it.  Changing a single byte of the body invalidates the signature the
+///   node checks, so the node validates it exactly as it would from any peer.
+/// * `account/proof` — an account asking for its **own** state by signing over a
+///   fresh nonce.  It is not a public balance endpoint: the node answers only when
+///   the signature proves the key, it answers only for the address that signed,
+///   and an unknown address gets a `404` rather than a number.  The explorer and
+///   the portal do not expose it in any form, and `GET` is refused, so nothing a
+///   third party can call returns a balance.
+///
+/// This forwards work, not authority.
+pub const NODE_WRITE_PATHS: &[&str] = &["transactions", "account/proof"];
+
+/// Whether a node API path may be written through this service.
+pub fn node_write_allowed(path: &str) -> bool {
+    NODE_WRITE_PATHS.contains(&path.trim_start_matches('/'))
+}
+
+/// Whether a node API path may be read through this service.
+pub fn node_read_allowed(path: &str) -> bool {
+    let trimmed = path.trim_start_matches('/');
+    if trimmed.starts_with("account/") || trimmed == "account" {
+        return false;
+    }
+    NODE_READ_PATHS.iter().any(|allowed| match allowed.strip_suffix('*') {
+        Some(prefix) => trimmed.starts_with(prefix),
+        None => trimmed == *allowed,
+    })
+}
+
 pub const ROUTES: &[Route] = &[
     Route { path: "/v1/explorer/status", method: "GET", summary: "network status: heights, times, supply, participation", scope: None },
     Route { path: "/v1/explorer/blocks", method: "GET", summary: "recent blocks, newest first", scope: Some("read:blocks") },

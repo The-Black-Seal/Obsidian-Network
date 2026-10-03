@@ -24,6 +24,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "obs-cli"
+version = "1.0.0"
+dependencies = [
+ "obs-chain",
+ "obs-crypto",
+ "obs-gateway",
+ "obs-node",
+ "obs-primitives",
+ "obs-rpc",
+ "obs-wallet",
+]
+
+[[package]]
 name = "obs-consensus"
 version = "1.0.0"
 dependencies = [
@@ -68,6 +81,7 @@ dependencies = [
  "obs-p2p",
  "obs-primitives",
  "obs-rpc",
+ "obs-wallet",
 ]
 
 [[package]]
@@ -101,4 +115,14 @@ dependencies = [
  "obs-chain",
  "obs-crypto",
  "obs-primitives",
+]
+
+[[package]]
+name = "obs-wasm"
+version = "1.0.0"
+dependencies = [
+ "obs-chain",
+ "obs-crypto",
+ "obs-primitives",
+ "obs-wallet",
 ]

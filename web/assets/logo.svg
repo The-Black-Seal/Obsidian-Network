@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Obsidian Network">
+  <title>Obsidian Network</title>
+  <defs>
+    <linearGradient id="glass" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#b9aaff"/>
+      <stop offset="0.45" stop-color="#8b7bff"/>
+      <stop offset="1" stop-color="#3b2fa8"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e8e3ff" stop-opacity="0.95"/>
+      <stop offset="0.5" stop-color="#8b7bff" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#140f38" stop-opacity="0.9"/>
+    </linearGradient>
+    <linearGradient id="facet" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f2efff" stop-opacity="0.92"/>
+      <stop offset="0.5" stop-color="#8b7bff" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#0a0818" stop-opacity="0.25"/>
+    </linearGradient>
+    <radialGradient id="core" cx="0.38" cy="0.3" r="0.75">
+      <stop offset="0" stop-color="#cfc6ff"/>
+      <stop offset="0.6" stop-color="#5a4fd0"/>
+      <stop offset="1" stop-color="#0b0918"/>
+    </radialGradient>
+  </defs>
+
+  <!-- The seal: the coin's rim, hexagonal because the protocol's units are whole. -->
+  <path d="M128 8 232 68v120L128 248 24 188V68z" fill="#0a0818" stroke="url(#rim)" stroke-width="6"/>
+
+  <!-- The shard: obsidian, broken with a conchoidal fracture. -->
+  <path d="M128 44 196 84v88l-68 40-68-40V84z" fill="url(#core)"/>
+  <path d="M128 44 128 212 60 172V84z" fill="url(#facet)"/>
+  <path d="M128 44v168l68-40V84z" fill="#070510" opacity="0.45"/>
+
+  <!-- The fracture line: a single clean edge, the way obsidian actually breaks. -->
+  <path d="M128 44 100 128 128 212" fill="none" stroke="#e8e3ff" stroke-opacity="0.5" stroke-width="3" stroke-linejoin="round"/>
+
+  <!-- The core: proof of time, a point held at the centre of the glass. -->
+  <circle cx="128" cy="128" r="13" fill="#e8e3ff" fill-opacity="0.94"/>
+  <circle cx="128" cy="128" r="26" fill="none" stroke="#e8e3ff" stroke-opacity="0.35" stroke-width="2"/>
+  <circle cx="128" cy="128" r="42" fill="none" stroke="#e8e3ff" stroke-opacity="0.16" stroke-width="2"/>
+</svg>

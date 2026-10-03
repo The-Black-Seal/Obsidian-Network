@@ -190,7 +190,10 @@ impl Drop for Harness {
 /// boundary still passes.
 fn codes_for(secret: &Secret) -> Vec<String> {
     let now = unix_now();
-    vec![secret.code_at(now).to_string(), secret.code_at(now + 30).to_string()]
+    vec![
+        format!("{:06}", secret.code_at(now)),
+        format!("{:06}", secret.code_at(now + 30)),
+    ]
 }
 
 /// Posts a body and insists on a success status.

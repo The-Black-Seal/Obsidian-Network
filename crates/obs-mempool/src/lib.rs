@@ -619,6 +619,28 @@ impl Mempool {
         }
         selected
     }
+
+    /// The declared protocol time of every pooled claim, oldest first.
+    ///
+    /// A claim is a statement about *protocol* time: the chain accepts it only in
+    /// a block whose timestamp equals the time the claim declares.  A proposer
+    /// therefore has to know which times the claims in its pool are waiting for,
+    /// so it can stamp its block to carry them.  Returning the distinct declared
+    /// times (not the transactions) is all the proposer needs, and it keeps the
+    /// choice of transactions in one place — [`Mempool::select_for_block`].
+    pub fn pooled_claim_times(&self) -> Vec<u64> {
+        let mut times: Vec<u64> = self
+            .entries
+            .values()
+            .filter_map(|entry| match &entry.tx.kind {
+                obs_chain::TxKind::Claim(claim) => Some(claim.claimed_at),
+                _ => None,
+            })
+            .collect();
+        times.sort_unstable();
+        times.dedup();
+        times
+    }
 }
 
 fn make_entry(tx: Transaction, sender: Address, bytes: usize, at: u64) -> Entry {

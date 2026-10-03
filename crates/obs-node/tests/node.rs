@@ -250,6 +250,80 @@ fn register_account(node: &mut Node, key: &Keypair, name: &str) {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn a_claim_submitted_by_a_wallet_is_mined_at_the_time_it_declares() {
+    // Mining is not a privilege of the block producer.  Any account may put a
+    // claim in the pool, and the claim states the protocol time it belongs to;
+    // the chain accepts it in the block stamped with exactly that time.  This is
+    // the test that a wallet's claim actually reaches the chain: without the
+    // proposer aligning the block's protocol time with a pending claim, a claim
+    // written before the block existed could only be mined by luck.
+    let devnet = Devnet::launch();
+    let producer = Keypair::from_seed(&[51u8; 32]);
+    let mut node = devnet.node("claim-pool", 52, Some(&producer));
+    register_account(&mut node, &producer, "claimproducer");
+
+    // A second account mines from its own wallet, on the same node.
+    let wallet = Keypair::from_seed(&[53u8; 32]);
+    register_account(&mut node, &wallet, "claimwallet");
+    let address = address_of(&wallet);
+    advance(&mut node, CLAIM_INTERVAL_SECS + 60);
+
+    // The wallet reads protocol time and declares it in the claim — the same
+    // arithmetic the CLI and the browser wallet use.
+    let at = node.protocol_time();
+    let state = node.head_state().clone();
+    let account = state.account(&address).expect("the wallet is registered").clone();
+    assert_eq!(account.claims_today, 0);
+    let claim = Transaction::sign(
+        NETWORK,
+        state.expected_nonce(&address),
+        TxKind::Claim(Claim {
+            account: address,
+            claimed_at: at,
+            sequence: account.last_claim_sequence + 1,
+        }),
+        &wallet,
+    );
+    let id = claim.id();
+    node.submit_transaction(claim).expect("the wallet's claim is poolable");
+
+    // The producer's own clock is five seconds past the claim's time, and the
+    // claim's time is inside the window, so the block is stamped where the claim
+    // is: the claim's protocol time wins over the wall clock.
+    let supply_before = node.head_state().issued_supply;
+    set_clock_to(&mut node, at + 5);
+    assert!(
+        node.mine_once().is_some(),
+        "a block must be produced: {:?}",
+        node.recent_events(8)
+    );
+
+    let head = node.head_state();
+    assert_eq!(
+        head.last_timestamp, at,
+        "the block carrying the claim is stamped with the claim's protocol time"
+    );
+    let mined = head.account(&address).expect("the wallet is still registered");
+    assert_eq!(mined.claims_today, 1, "the claim was applied, not dropped");
+    assert_eq!(mined.last_claim_at, at);
+    // The reward is the protocol's own number for that moment, and it was issued:
+    // this account has mined once and has exactly one claim's value, and the
+    // chain's issued supply grew by exactly the same amount.
+    let reward = head.mining_reward_at(at);
+    assert!(reward.grains() > 0, "a claim is paid");
+    assert_eq!(mined.balance, reward);
+    assert_eq!(mined.lifetime_rewards, reward);
+    assert_eq!(
+        head.issued_supply,
+        supply_before.checked_add(reward).unwrap(),
+        "the claim's issuance is in the chain's supply, and nothing else was issued"
+    );
+    // And it left the pool: a mined transaction is not re-mined.
+    assert!(node.mempool_stats().transactions == 0);
+    let _ = id;
+}
+
+#[test]
 fn a_new_node_starts_at_the_genesis_block() {
     let devnet = Devnet::launch();
     let node = devnet.node("fresh", 1, None);

@@ -234,23 +234,45 @@ impl Harness {
                 .unwrap(),
         )
         .unwrap();
-        let code = secret.code_at(now).to_string();
+        // A TOTP code is only valid inside its own 30-second step.  A test that
+        // computes a code at `now` and confirms it at `now` is fine, but one that
+        // lands on a step boundary fails for a reason that has nothing to do with
+        // what is being tested — so the code is taken for the *next* step, which
+        // is guaranteed to leave the whole request inside one window.
+        // Six digits, always: a TOTP code is a fixed-width number, and the
+        // verifier rejects anything else — `12345.to_string()` is not a code.
+        let code = format!("{:06}", secret.code_at(now + 30 - (now % 30)));
         registry.confirm_mfa(&token, &code, now).unwrap();
         registry
             .attach_wallet(&token, keys.wallet_key, keys.node_key, keys.recovery_key, now)
             .unwrap();
-        // Sign in with a code from the same instant we present, so landing on a
-        // thirty-second boundary cannot make this a flake.
-        let at = unix_now();
+        // Sign in with a code computed for the moment of the request.  The clock
+        // is read again on every attempt, so an attempt that lands on a
+        // thirty-second boundary is retried with the code for the step that has
+        // actually begun rather than the one that just ended.
         let mut session = None;
-        for offset in [0u64, 30, 0] {
-            let code = secret.code_at(at.saturating_add(offset)).to_string();
+        for _ in 0..8 {
+            let at = unix_now();
+            let code = format!("{:06}", secret.code_at(at));
             if let Ok((token, _)) = registry.sign_in(gmail, "correct horse battery staple", &code, at) {
                 session = Some(token);
                 break;
             }
+            std::thread::sleep(Duration::from_millis(250));
         }
         session.expect("the password and the authenticator together sign in")
+    }
+
+    /// Posts a JSON body with no API key, for the node read-through.
+    fn post_plain(&self, path: &str, body: &Json) -> (u16, String) {
+        let response: ClientResponse = self
+            .client()
+            .send(Method::Post, &self.url(path), Some(body), None)
+            .expect("the service answers");
+        (
+            response.status.code(),
+            String::from_utf8_lossy(&response.body).to_string(),
+        )
     }
 
     fn get(&self, path: &str) -> Json {
@@ -588,6 +610,53 @@ fn search_finds_blocks_and_addresses_and_refuses_nonsense() {
     // A hash-shaped query that is not in the index is a 404, not an invention.
     let (code, _) = harness.get_raw(&format!("/v1/explorer/search?q={}", "ab".repeat(32)));
     assert_eq!(code, 404);
+}
+
+#[test]
+fn the_page_reads_the_node_through_its_own_origin_and_only_what_it_may() {
+    let harness = Harness::launch(false);
+
+    // The public chain reads are forwarded, and the answer is the node's own.
+    let status = harness.get("/node/api/v1/status");
+    assert_eq!(status.get("chain_id").and_then(Json::as_i128), Some(NETWORK.chain_id as i128));
+    assert!(status.get("height").and_then(Json::as_u64).unwrap() >= 1);
+    let supply = harness.get("/node/api/v1/supply");
+    assert!(supply.get("max_supply").and_then(Json::as_str).is_some());
+
+    // A single path is forwarded as written; no encoding or traversal trick
+    // reaches a second one.
+    for path in [
+        "/node/api/v1/admin",
+        "/node/api/v1/account",
+        "/node/api/v1/blocks/1/../../account/proof",
+    ] {
+        let (code, body) = harness.get_raw(path);
+        // Either the HTTP layer refuses the shape of the path or the allowlist
+        // refuses the path itself; what matters is that nothing is forwarded.
+        assert!(
+            code == 400 || code == 403,
+            "{} must be refused, got {} {}",
+            path,
+            code,
+            body
+        );
+    }
+
+    // Reading a balance requires a signature, so `GET` cannot reach it at all.
+    let (code, _) = harness.get_raw("/node/api/v1/account/proof");
+    assert_eq!(code, 403);
+
+    // And the write it does forward is refused without a valid signature, so the
+    // service cannot be used to mint, move or approve anything.
+    let (code, body) = harness.post_plain(
+        "/node/api/v1/account/proof",
+        &Json::obj([
+            ("address".to_string(), Json::Str(harness.wallet.address().to_string())),
+            ("nonce".to_string(), Json::Str("n1".to_string())),
+            ("signature".to_string(), Json::Str("00".repeat(64))),
+        ]),
+    );
+    assert_eq!(code, 403, "an unsigned proof must not be accepted: {}", body);
 }
 
 #[test]

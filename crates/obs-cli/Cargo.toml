@@ -1,0 +1,24 @@
+[package]
+name = "obs-cli"
+description = "Obsidian Network command-line client: wallets, mining, registration and operator tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "obs-cli"
+path = "src/main.rs"
+
+[dependencies]
+obs-crypto.workspace = true
+obs-primitives.workspace = true
+obs-chain.workspace = true
+obs-wallet.workspace = true
+obs-rpc.workspace = true
+obs-gateway.workspace = true
+obs-node.workspace = true
+
+[dev-dependencies]
+obs-rpc.workspace = true

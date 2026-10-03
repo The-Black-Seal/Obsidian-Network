@@ -47,15 +47,20 @@ pub struct Gateway {
 }
 
 impl Gateway {
-    /// Wraps a registry.
-    pub fn new(registry: Registry, network: Network) -> Gateway {
+    /// Wraps a registry that is shared with the rest of the deployment.
+    ///
+    /// A service that hosts the account flow *and* anything else that needs to
+    /// read accounts (the developer portal, for instance) keeps one registry
+    /// behind one lock, so there is exactly one writer and no second copy that
+    /// could drift.
+    pub fn from_shared(registry: Arc<Mutex<Registry>>, network: Network) -> Gateway {
         let allowed_origins = vec![
             format!("localhost:{GATEWAY_PORT}"),
             format!("127.0.0.1:{GATEWAY_PORT}"),
             GATEWAY_DOMAIN.to_string(),
         ];
         Gateway {
-            registry: Arc::new(Mutex::new(registry)),
+            registry,
             network,
             now: Box::new(|| {
                 u64::try_from(
@@ -68,6 +73,11 @@ impl Gateway {
             }),
             allowed_origins,
         }
+    }
+
+    /// Wraps a registry.
+    pub fn new(registry: Registry, network: Network) -> Gateway {
+        Gateway::from_shared(Arc::new(Mutex::new(registry)), network)
     }
 
     /// Replaces the clock (test hook).
@@ -278,7 +288,10 @@ pub fn authorization_from_json(
 impl Handler for Gateway {
     fn handle(&self, request: &Request, _peer: &Peer) -> Response {
         let state_changing = matches!(request.method, Method::Post | Method::Put | Method::Delete);
-        if state_changing && !request.same_origin(&self.origins()) {
+        if state_changing
+            && !request.same_origin(&self.origins())
+            && !request.same_origin_as_host()
+        {
             return error(
                 Status::FORBIDDEN,
                 "cross_origin",

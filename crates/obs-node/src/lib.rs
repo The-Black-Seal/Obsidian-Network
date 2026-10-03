@@ -1160,10 +1160,40 @@ impl Node {
     }
 
     /// The timestamp the next block may carry.
+    ///
+    /// Two things decide it, in this order:
+    ///
+    /// 1. **A claim that is waiting.**  A claim declares the protocol time of the
+    ///    block that will contain it — the chain accepts it in that block and no
+    ///    other — so when the pool holds a claim whose declared time still fits
+    ///    inside the legal window, the proposer stamps its block with that time
+    ///    and carries the claim.  This is what makes mining from a wallet work at
+    ///    all: the miner's own claim is built for the block's time, but any other
+    ///    account's claim was written before this block existed, and only the
+    ///    proposer can meet it.  Oldest first, so a claim cannot be starved by
+    ///    later ones.
+    /// 2. **This node's clock**, clamped to the window `[head + 1, head + 60]`.
+    ///    The clamp is the protocol's own rule for how far protocol time may move
+    ///    in one block, so a node whose wall clock has drifted (or a chain that
+    ///    has been quiet for a while) still produces a block the chain accepts,
+    ///    and catches up 60 seconds at a time.
+    ///
+    /// The window itself is never widened: this function chooses *within* the
+    /// rules, so a block it proposes is valid for every other node, and a chain
+    /// whose clock is being held back still advances by at least one second per
+    /// block.
     fn candidate_timestamp(&self) -> Option<u64> {
         let head = self.head_state();
         let lower = head.last_timestamp + MIN_BLOCK_SPACING_SECS;
         let upper = head.last_timestamp + MAX_BLOCK_DRIFT_SECS;
+        if let Some(declared) = self
+            .mempool
+            .pooled_claim_times()
+            .into_iter()
+            .find(|declared| *declared >= lower && *declared <= upper)
+        {
+            return Some(declared);
+        }
         let now = self.clock.unix_now();
         if now < lower {
             return None;

@@ -1,0 +1,22 @@
+[package]
+name = "obs-wasm"
+description = "The browser wallet: Obsidian's own wallet code compiled to WebAssembly"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+obs-crypto = { workspace = true }
+obs-primitives = { workspace = true }
+obs-chain = { workspace = true }
+obs-wallet = { workspace = true }
+
+[features]
+# The C ABI is only meaningful in a wasm build; on a host build the module is
+# still compiled (so its logic is type-checked and testable) but exports nothing.
+host-abi = []

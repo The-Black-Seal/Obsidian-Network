@@ -159,6 +159,30 @@ impl Request {
             }
         }
     }
+
+    /// True when the request's `Origin` matches the host this request was
+    /// addressed to.
+    ///
+    /// This is the general form of the same-origin rule, and the one a service
+    /// that serves its own pages should use: a browser loading the page from
+    /// `http://host:port` sends `Origin: http://host:port` with its fetches, so
+    /// comparing the origin against the `Host` header accepts exactly the pages
+    /// this service serves — whatever address the operator published it on —
+    /// and refuses every other site.  A request with no `Origin` is not a
+    /// browser making a cross-site call, and is left to the caller's other
+    /// checks.
+    pub fn same_origin_as_host(&self) -> bool {
+        let Some(origin) = self.header("origin") else {
+            return true;
+        };
+        let Some((_scheme, origin_host)) = origin.split_once("://") else {
+            return false;
+        };
+        let Some(host) = self.host.as_deref() else {
+            return false;
+        };
+        origin_host.trim_end_matches('/').eq_ignore_ascii_case(host)
+    }
 }
 
 /// Why a body could not be read as JSON.
@@ -815,6 +839,38 @@ mod tests {
             }
             other => panic!("expected a parsed request, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn the_same_origin_rule_compares_the_origin_with_the_host() {
+        let sent = |origin: &str| {
+            let raw = format!(
+                "POST /v1/portal/keys HTTP/1.1\r\nHost: explorer.obsidian.network\r\nOrigin: {}\r\n\r\n",
+                origin
+            );
+            match parse(&raw) {
+                Parsed::Complete(request, _) => request,
+                other => panic!("expected a parsed request, got {:?}", other),
+            }
+        };
+        // The service's own page: accepted, whatever address it was published on.
+        assert!(sent("http://explorer.obsidian.network").same_origin_as_host());
+        assert!(sent("https://explorer.obsidian.network").same_origin_as_host());
+        // A different site, a look-alike host, a missing scheme and an empty
+        // host are all refused.
+        assert!(!sent("https://evil.example").same_origin_as_host());
+        assert!(!sent("https://explorer.obsidian.network.evil.example").same_origin_as_host());
+        assert!(!sent("explorer.obsidian.network").same_origin_as_host());
+        assert!(!sent("").same_origin_as_host());
+        // A request without an Origin is not a browser cross-site call.
+        let raw = "GET /v1/explorer/status HTTP/1.1\r\nHost: explorer.obsidian.network\r\n\r\n";
+        match parse(raw) {
+            Parsed::Complete(request, _) => assert!(request.same_origin_as_host()),
+            other => panic!("expected a parsed request, got {:?}", other),
+        }
+        // And the explicit-list form still works for deployments behind a proxy.
+        assert!(sent("https://explorer.obsidian.network")
+            .same_origin(&["explorer.obsidian.network".to_string()]));
     }
 
     #[test]

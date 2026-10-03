@@ -20,12 +20,13 @@ use std::sync::{Arc, Mutex};
 use obs_gateway::accounts::Registry;
 use obs_primitives::json::Json;
 use obs_primitives::network::Network;
+use obs_rpc::client::Client as HttpClient;
 use obs_rpc::http::{Method, Request, Response, Status};
 use obs_rpc::server::{Handler, Peer};
 
 use crate::indexer::Indexer;
 use crate::portal::{Portal, PortalError, RateLimit, Scope};
-use crate::privacy::{scrub, ROUTES};
+use crate::privacy::{node_read_allowed, node_write_allowed, scrub, NODE_READ_PREFIX, ROUTES};
 
 /// Configuration for the application service.
 #[derive(Debug, Clone)]
@@ -41,6 +42,13 @@ pub struct AppConfig {
     /// Whether an API key is required for explorer reads.  A public explorer
     /// sets this to `false`; a portal for developers sets it to `true`.
     pub require_key: bool,
+    /// Extra origins allowed to make state-changing requests, on top of the
+    /// service's own host (see [`obs_rpc::http::Request::same_origin_as_host`]).
+    pub allowed_origins: Vec<String>,
+    /// Directory of static files to serve, when this deployment also hosts the
+    /// web interface.  The API and the interface then share one origin, which is
+    /// what makes the session cookie and the API-key header usable at all.
+    pub static_dir: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -51,6 +59,8 @@ impl Default for AppConfig {
             max_page: 100,
             default_page: 25,
             require_key: false,
+            allowed_origins: Vec::new(),
+            static_dir: None,
         }
     }
 }
@@ -61,6 +71,12 @@ pub struct App {
     portal: Arc<Mutex<Portal>>,
     /// The registration gateway's registry, for account sessions.
     accounts: Option<Arc<Mutex<Registry>>>,
+    /// The registration gateway itself, when this deployment serves the account
+    /// flows as well as the explorer.  One process, one origin, one session
+    /// cookie — which is what a browser needs.
+    gateway: Option<Arc<obs_gateway::api::Gateway>>,
+    /// The web interface's files, when this deployment serves them.
+    files: Option<obs_rpc::server::StaticFiles>,
     config: AppConfig,
     clock: Box<dyn Fn() -> u64 + Send + Sync>,
 }
@@ -68,10 +84,17 @@ pub struct App {
 impl App {
     /// Builds the service.
     pub fn new(config: AppConfig, indexer: Indexer, portal: Portal) -> App {
+        let files = config
+            .static_dir
+            .as_ref()
+            .and_then(|dir| obs_rpc::server::StaticFiles::new(dir).ok())
+            .map(|files| files.with_spa_fallback("index.html"));
         App {
             indexer: Arc::new(Mutex::new(indexer)),
             portal: Arc::new(Mutex::new(portal)),
             accounts: None,
+            gateway: None,
+            files,
             config,
             clock: Box::new(|| {
                 u64::try_from(
@@ -90,6 +113,25 @@ impl App {
     pub fn with_accounts(mut self, registry: Arc<Mutex<Registry>>) -> App {
         self.accounts = Some(registry);
         self
+    }
+
+    /// Mounts the registration gateway in the same service.
+    ///
+    /// The account flow, the explorer and the developer portal then share one
+    /// origin: a browser can carry a session from the sign-up page to the
+    /// portal, and the service's own pages are the only origin its
+    /// state-changing routes accept.  Running them as one process is a
+    /// deployment choice, not an architectural one — they remain separate
+    /// modules with separate stores, and a larger deployment can split them and
+    /// list each other's origins explicitly.
+    pub fn with_gateway(mut self, gateway: Arc<obs_gateway::api::Gateway>) -> App {
+        self.gateway = Some(gateway);
+        self
+    }
+
+    /// Whether this service also hosts the account flows.
+    pub fn hosts_gateway(&self) -> bool {
+        self.gateway.is_some()
     }
 
     /// Replaces the clock (test hook).
@@ -156,6 +198,113 @@ fn publish(value: Json) -> Response {
     }
 }
 
+
+/// Forwards a request to the node this service indexes.
+///
+/// A browser gets one origin, so the application serves the node's public read
+/// surface under [`NODE_READ_PREFIX`] and the one write a wallet needs — a
+/// signed transaction — under the same prefix.  Three rules make this a
+/// convenience rather than an authority:
+///
+/// 1. **An allowlist, not a proxy.**  Only the paths in
+///    [`crate::privacy::NODE_READ_PATHS`] are read, and only `transactions` is
+///    written.  The path is compared segment by segment, so no traversal or
+///    encoding trick reaches anything else.
+/// 2. **Nothing is invented.**  The node's own status code, content type and
+///    body are passed through unchanged, and an unreachable node is reported as
+///    `503` rather than papered over.  This service has no chain state of its
+///    own to answer from, so it never guesses.
+/// 3. **The privacy contract still applies.**  A JSON body is scrubbed on the
+///    way out; if a node answer ever contained a balance, the person would see a
+///    refusal here instead of a number.
+fn forward_to_node(request: &Request, node_url: &str) -> Response {
+    let tail = match request.path.strip_prefix(NODE_READ_PREFIX) {
+        Some(tail) => tail.trim_start_matches('/'),
+        None => return error(Status::NOT_FOUND, "not_found", "no such route"),
+    };
+    let (api_path, query) = match tail.split_once('?') {
+        Some((path, query)) => (path, query),
+        None => (tail, request.query.as_str()),
+    };
+    let api_path = api_path.trim_start_matches('/');
+    let allowlisted = match request.method {
+        Method::Get => api_path.starts_with("api/v1/") && node_read_allowed(&api_path["api/v1/".len()..]),
+        // A transaction, and an account reading its own state: the two writes the
+        // node itself accepts, both of them already authenticated by a signature.
+        Method::Post => api_path
+            .strip_prefix("api/v1/")
+            .map(node_write_allowed)
+            .unwrap_or(false),
+        _ => false,
+    };
+    if !allowlisted {
+        return error(
+            Status::FORBIDDEN,
+            "not_forwarded",
+            "this service forwards only the node's public read paths, a signed transaction, and an account's signed proof of its own state",
+        );
+    }
+    let mut url = format!("{}/{}", node_url.trim_end_matches('/'), api_path);
+    if !query.is_empty() {
+        url.push('?');
+        url.push_str(query);
+    }
+    let client = HttpClient::with_timeout(std::time::Duration::from_secs(15));
+    let response = match request.method {
+        Method::Post => client.post_raw(
+            &url,
+            request.body.clone(),
+            "application/json; charset=utf-8",
+        ),
+        _ => client.get(&url),
+    };
+    match response {
+        Ok(answer) => {
+            let content_type = answer
+                .headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+                .map(|(_, value)| value.clone())
+                .unwrap_or_else(|| "application/octet-stream".to_string());
+            let scrubbed = if content_type.contains("json") {
+                match obs_rpc::client::json_body(&answer) {
+                    Ok(value) => match scrub(&value) {
+                        Ok(clean) => serde_free_encoding(&clean),
+                        Err(_violation) => {
+                            return error(
+                                Status::INTERNAL,
+                                "privacy_contract",
+                                "the response was withheld: it did not satisfy the network's privacy contract",
+                            )
+                        }
+                    },
+                    Err(_) => return error(Status(502), "node_protocol", "the node's answer was malformed"),
+                }
+            } else {
+                answer.body.clone()
+            };
+            Response {
+                status: answer.status,
+                headers: Vec::new(),
+                body: scrubbed,
+            }
+            .header("content-type", content_type)
+            .no_store()
+            .hardened()
+        }
+        Err(failure) => error(
+            Status::UNAVAILABLE,
+            "node_unreachable",
+            &format!("the node could not be reached: {}", failure),
+        ),
+    }
+}
+
+/// Renders a scrubbed JSON value as UTF-8 bytes.
+fn serde_free_encoding(value: &Json) -> Vec<u8> {
+    value.to_string().into_bytes()
+}
+
 fn page_of(request: &Request, config: &AppConfig) -> (usize, usize) {
     let limit = request
         .param("limit")
@@ -201,15 +350,40 @@ impl Handler for App {
     fn handle(&self, request: &Request, _peer: &Peer) -> Response {
         let now = self.now();
         let state_changing = matches!(request.method, Method::Post | Method::Put | Method::Delete);
-        if state_changing && !request.same_origin(&[]) && !request.same_origin(&["obsidian.network".to_string()]) {
-            // Portal writes are same-origin; explorer reads are not writes.
-            if request.path.starts_with("/v1/portal") {
-                return error(
-                    Status::FORBIDDEN,
-                    "cross_origin",
-                    "state-changing requests must come from the service's own origin",
-                );
+        if state_changing
+            && request.path.starts_with("/v1/")
+            && !request.same_origin(&self.config.allowed_origins)
+            && !request.same_origin_as_host()
+        {
+            return error(
+                Status::FORBIDDEN,
+                "cross_origin",
+                "state-changing requests must come from the service's own origin",
+            );
+        }
+        // Everything the registration service owns is delegated to it, so its
+        // own origin and session rules are the ones that apply to its routes.
+        if let Some(gateway) = &self.gateway {
+            let tail = request.path.as_str();
+            let owned_by_gateway = [
+                "/v1/register/",
+                "/v1/auth/",
+                "/v1/invites",
+                "/v1/recovery/",
+                "/v1/account",
+                "/v1/network",
+                "/v1/authority",
+            ]
+            .iter()
+            .any(|prefix| tail == prefix.trim_end_matches('/') || tail.starts_with(prefix));
+            if owned_by_gateway {
+                return gateway.handle(request, _peer);
             }
+        }
+        // The read-through to the node comes first: it answers on its own prefix
+        // and must never be confused with this service's own routes.
+        if request.path == NODE_READ_PREFIX || request.path.starts_with(&format!("{}/", NODE_READ_PREFIX)) {
+            return forward_to_node(request, &self.config.node_url);
         }
         let segments: Vec<&str> = request
             .path
@@ -275,7 +449,14 @@ impl Handler for App {
             (Method::Post, ["v1", "portal", "keys", id, "rotate"]) => self.portal_rotate(request, id),
             (Method::Get, ["v1", "portal", "usage"]) => self.portal_usage(request),
             (Method::Get, ["v1", "portal", "openapi.json"]) => publish(openapi(&self.config)),
-            _ => error(Status::NOT_FOUND, "not_found", "no such endpoint"),
+            _ => match &self.files {
+                // Anything that is not an API path may be a page or an asset.
+                Some(files) => match files.serve(request) {
+                    Some(response) => response,
+                    None => error(Status::NOT_FOUND, "not_found", "no such endpoint"),
+                },
+                None => error(Status::NOT_FOUND, "not_found", "no such endpoint"),
+            },
         };
         let _ = now;
         response
