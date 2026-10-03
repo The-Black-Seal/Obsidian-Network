@@ -1103,6 +1103,19 @@ fn the_chain_credits_proposers_and_counts_missed_opportunities() {
     assert_eq!(record.attestation_count, 1, "one piece of evidence");
     assert_eq!(record.missed_slots, 1, "one block carried no evidence");
     assert!(env.state.validator_score(&node.public_key(), env.time).unwrap() > 0);
+
+    // A validator can also propose with the wallet key that owns its bond:
+    // inside the bootstrap window a registered account may propose, and the bond
+    // — not only the attestation identity — belongs to the wallet.  This is the
+    // configuration a live devnet runs (one validator, mining with the founder
+    // wallet), and it used to be credited with nothing at all.
+    env.commit_as(&owner, vec![], Vec::new())
+        .expect("the bond's wallet may propose in bootstrap mode");
+    let record = env.state.validator(&node.public_key()).unwrap().clone();
+    assert_eq!(
+        record.blocks_proposed, 3,
+        "a block proposed by the bond's wallet is credited to its validator"
+    );
 }
 
 #[test]

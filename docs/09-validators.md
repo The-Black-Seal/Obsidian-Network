@@ -108,7 +108,12 @@ Blocks carry up to `MAX_ATTESTATIONS_PER_BLOCK = 1,024` attestations, each one
 counted into the block's PoT weight ([05](05-weight-and-fork-choice.md)).
 Validator accounting is written only from block content: the block that names a
 validator as proposer credits it with a proposed block, and a block that does not
-carry a validator's attestation charges it one missed opportunity. Both numbers
+carry a validator's attestation charges it one missed opportunity. A block's
+proposer is whoever signed the header, which is the validator's **node identity**
+in scheduled mode and may be its **wallet key** inside the bootstrap window; a
+validator is credited when either of its keys proposed, because the bond belongs
+to the wallet and the attestations to the node identity and the protocol
+requires those two keys to differ. Both numbers
 and the uptime ratio above are what the node reports for `/api/v1/validators`,
 which is exactly how the Explorer's validator table is produced. Finality is
 reached when the attested weight past a block satisfies a two-thirds quorum of

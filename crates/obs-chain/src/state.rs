@@ -794,8 +794,20 @@ impl ChainState {
         // block when the signed header names it as proposer, and charged one
         // missed opportunity when the block does not carry its attestation.
         // Neither number is ever taken from a node's own report.
-        if let Some(record) = self.validators.get_mut(&header.proposer) {
-            if record.is_active() {
+        //
+        // A header's proposer is whichever key signed it: in scheduled mode the
+        // slot schedule names a validator's *node identity*, while during the
+        // bootstrap window a registered account's *wallet key* may propose.  The
+        // bond belongs to the wallet and the attestations to the node identity
+        // (the protocol requires them to differ), so a validator is credited
+        // when either of its keys proposed.  Matching the node key alone left a
+        // bootstrap validator that proposed every block reading
+        // `blocks_proposed: 0` on the live devnet while its `attestations` and
+        // `missed_slots` moved: the evidence existed, the attribution did not.
+        for record in self.validators.values_mut() {
+            if record.is_active()
+                && (record.node_key == header.proposer || record.owner_key == header.proposer)
+            {
                 record.blocks_proposed = record.blocks_proposed.saturating_add(1);
             }
         }

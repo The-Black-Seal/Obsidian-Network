@@ -217,8 +217,15 @@ check 49 "finality needs a two-thirds quorum, computed in integers" \
     bash -c 'grep -q "FINALITY_QUORUM_NUMERATOR: u64 = 2" crates/obs-chain/src/params.rs && grep -q "FINALITY_QUORUM_DENOMINATOR: u64 = 3" crates/obs-chain/src/params.rs'
 check 50 "the validator tests pass" \
     cargo test -p obs-chain --quiet -- validator 2>/dev/null
-check 51 "the live node reports its validator set and active count" \
-    bash -c "curl -sf $NODE/api/v1/validators | grep -q '\"validators\"' && curl -sf $NODE/api/v1/status | grep -q '\"active_validators\"'"
+# The evidence a validator's uptime and score are derived from has to be
+# *there*: a live validator that has proposed blocks must show a non-zero
+# `blocks_proposed`, or the operator is being shown a number no block ever
+# wrote.  That is exactly what a live devnet showed — `blocks_proposed: 0`
+# beside `attestations: 2469` on a validator that had proposed every block —
+# because the credit matched only the node identity while a bootstrap
+# validator proposes with the wallet key that owns its bond.
+check 51 "the live node reports its validator set, active count and proposer credit" \
+    bash -c "curl -sf $NODE/api/v1/validators | grep -q '\"validators\"' && curl -sf $NODE/api/v1/validators | grep -q '\"blocks_proposed\":[1-9]' && curl -sf $NODE/api/v1/status | grep -q '\"active_validators\"'"
 # A node that cannot *found* a chain is not a node that cannot *join* one.  This
 # starts a second node against the running network with nothing but the chain's
 # epoch (read from the first node's status, so it works for any deployment) and

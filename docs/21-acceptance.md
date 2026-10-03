@@ -133,7 +133,7 @@ Rust suite: 353 passed, 0 failed. JavaScript suite: 15 passed, 0 failed.
 
 ## What the run found
 
-Thirteen defects were found by running it, and all thirteen are fixed — which is
+Fourteen defects were found by running it, and all fourteen are fixed — which is
 the point of having it:
 
 1. **The interface did not boot.** The page's shell never painted: the app
@@ -340,6 +340,24 @@ the point of having it:
    nothing but the epoch, waits for the joiner to reach the height the first
    node was at, and compares state roots there — and additionally requires the
    joined chain to contain the registration block.
+
+14. **The proposer credit was written, and never attributed to the validator
+   that earned it.** The fix in defect 7 made `blocks_proposed` and
+   `missed_slots` real, and the live check confirmed only half of it: on a
+   devnet whose single validator had mined every block, `/api/v1/validators`
+   reported `blocks_proposed: 0` beside `attestations: 2469` and
+   `missed_slots: 4`. The credit matched the header's proposer against
+   `record.node_key` only. In scheduled mode that is right — the slot schedule
+   names a validator's node identity — but inside the bootstrap window a
+   registered account's *wallet key* may propose, and that is exactly how a
+   real network starts: the founder wallet mines while the validator key
+   attests, and the protocol requires the two keys to differ. A block proposed
+   with the wallet was credited to nobody. A validator is now credited when
+   either of its keys proposed, and the regression test commits one block with
+   the bond's wallet and requires `blocks_proposed` to move (it stays at 2 of 3
+   without the fix). Acceptance check 51 now also requires a non-zero
+   `blocks_proposed` from the live node, so the operator-visible number cannot
+   silently go back to zero.
 
 Three further corrections were to the run itself rather than the system: the
 acceptance script had three checks pointed at the wrong source file or looking
