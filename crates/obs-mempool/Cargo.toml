@@ -1,0 +1,12 @@
+[package]
+name = "obs-mempool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Obsidian Network transaction pool: policy-bounded admission and deterministic block templates"
+
+[dependencies]
+obs-crypto = { workspace = true }
+obs-primitives = { workspace = true }
+obs-chain = { workspace = true }

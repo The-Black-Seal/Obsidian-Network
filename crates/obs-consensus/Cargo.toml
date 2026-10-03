@@ -1,0 +1,12 @@
+[package]
+name = "obs-consensus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Obsidian Network consensus engine: durable chain storage, fork choice and reorganisations"
+
+[dependencies]
+obs-crypto = { workspace = true }
+obs-primitives = { workspace = true }
+obs-chain = { workspace = true }

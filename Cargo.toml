@@ -1,0 +1,53 @@
+# Obsidian Network — Rust workspace
+#
+# Design rule: the workspace builds with ZERO third-party dependencies.
+# Every cryptographic primitive, codec, storage engine and HTTP server used by
+# the protocol is implemented in-tree from published specifications. See
+# docs/architecture/supply-chain.md for the rationale and docs/security/crypto.md
+# for the specification references and cross-validation evidence.
+[workspace]
+resolver = "2"
+members = [
+    "crates/obs-crypto",
+    "crates/obs-primitives",
+    "crates/obs-chain",
+    "crates/obs-consensus",
+    "crates/obs-mempool",
+    "crates/obs-rpc",
+    "crates/obs-p2p",
+    "crates/obs-node",
+    "crates/obs-wallet",
+    "crates/obs-gateway",
+]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.88"
+license = "Apache-2.0"
+authors = ["Obsidian Network Contributors"]
+
+[workspace.dependencies]
+obs-crypto = { path = "crates/obs-crypto" }
+obs-primitives = { path = "crates/obs-primitives" }
+obs-chain = { path = "crates/obs-chain" }
+obs-consensus = { path = "crates/obs-consensus" }
+obs-mempool = { path = "crates/obs-mempool" }
+obs-p2p = { path = "crates/obs-p2p" }
+obs-rpc = { path = "crates/obs-rpc" }
+obs-node = { path = "crates/obs-node" }
+obs-wallet = { path = "crates/obs-wallet" }
+obs-app = { path = "crates/obs-app" }
+obs-gateway = { path = "crates/obs-gateway" }
+obs-cli = { path = "crates/obs-cli" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+overflow-checks = true
+debug = false
+
+[profile.dev]
+opt-level = 1
+overflow-checks = true

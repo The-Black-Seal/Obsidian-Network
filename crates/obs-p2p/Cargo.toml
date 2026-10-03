@@ -1,0 +1,12 @@
+[package]
+name = "obs-p2p"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Obsidian Network peer-to-peer transport: authenticated handshake, framed messages, bounded peers"
+
+[dependencies]
+obs-crypto = { workspace = true }
+obs-primitives = { workspace = true }
+obs-chain = { workspace = true }

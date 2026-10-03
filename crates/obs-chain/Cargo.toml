@@ -1,0 +1,11 @@
+[package]
+name = "obs-chain"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Obsidian Network consensus data structures: blocks, transactions, claims, PoT weight and fork choice"
+
+[dependencies]
+obs-crypto = { workspace = true }
+obs-primitives = { workspace = true }

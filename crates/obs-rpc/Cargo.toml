@@ -1,0 +1,11 @@
+[package]
+name = "obs-rpc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Obsidian Network HTTP/1.1 service layer: strict request parsing, JSON responses and static file serving"
+
+[dependencies]
+obs-crypto = { workspace = true }
+obs-primitives = { workspace = true }

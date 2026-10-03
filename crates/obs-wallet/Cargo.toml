@@ -1,0 +1,12 @@
+[package]
+name = "obs-wallet"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Non-custodial Obsidian wallet: key derivation, encrypted keystore, recovery separation and transaction signing"
+
+[dependencies]
+obs-crypto = { workspace = true }
+obs-primitives = { workspace = true }
+obs-chain = { workspace = true }

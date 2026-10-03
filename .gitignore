@@ -1,0 +1,22 @@
+# Rust build output
+/target/
+**/*.rs.bk
+*.pdb
+
+# Node / web tooling
+node_modules/
+web/dist/
+web/.next/
+
+# Local runtime data (chains, wallets, logs, databases) — never commit value
+/run/
+*.log
+*.tmp
+*.swp
+.DS_Store
+
+# Secrets: nothing in this repository may ever contain a real invitation code,
+# private key, seed phrase, API secret or production credential.
+*.secret
+.env
+.env.*

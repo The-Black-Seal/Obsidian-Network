@@ -1,0 +1,20 @@
+[package]
+name = "obs-crypto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Obsidian Network cryptographic primitives (from-spec, zero dependencies)"
+
+[lib]
+# The crate is compiled both natively (nodes, gateway) and to
+# wasm32-unknown-unknown (browser wallet signing engine).
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+# Intentionally empty: zero third-party dependencies. See docs/security/crypto.md
+
+[features]
+default = []
+# Enables the `#[no_mangle] extern "C"` wasm ABI surface (browser wallet).
+wasm-abi = []

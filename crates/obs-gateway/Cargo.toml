@@ -1,0 +1,17 @@
+[package]
+name = "obs-gateway"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Obsidian Network registration gateway: the invitation-gated account flow, MFA, sessions and the invitation authority"
+
+[dependencies]
+obs-crypto = { workspace = true }
+obs-primitives = { workspace = true }
+obs-chain = { workspace = true }
+obs-rpc = { workspace = true }
+obs-wallet = { workspace = true }
+
+[dev-dependencies]
+obs-node = { workspace = true }

@@ -1,0 +1,10 @@
+[package]
+name = "obs-primitives"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Obsidian Network foundational value types (money, hashes, addresses, codec, JSON)"
+
+[dependencies]
+obs-crypto = { workspace = true }

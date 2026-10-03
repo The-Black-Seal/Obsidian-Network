@@ -1,0 +1,16 @@
+[package]
+name = "obs-node"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Obsidian Network full node: chain store, transaction pool, peer service, block production and the node RPC API"
+
+[dependencies]
+obs-crypto = { workspace = true }
+obs-primitives = { workspace = true }
+obs-chain = { workspace = true }
+obs-consensus = { workspace = true }
+obs-mempool = { workspace = true }
+obs-p2p = { workspace = true }
+obs-rpc = { workspace = true }
