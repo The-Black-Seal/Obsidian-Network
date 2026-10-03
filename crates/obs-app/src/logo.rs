@@ -24,6 +24,23 @@
 //! up to [`MAX_LOGO_BYTES`].  SVG is allowed because logos are often SVG: it is
 //! served as an image and referenced from `<img>`, where scripts inside it do not
 //! run.
+//!
+//! # When the server cannot reach the host
+//!
+//! There is one case the server-side fetch cannot serve: a deployment whose
+//! *visitors* can reach the logo host but whose *server* cannot — a sandbox, an
+//! air-gapped node behind a proxy, a host the operator has allowlisted only for
+//! browsers.  For that, an operator may name a second source with
+//! `--mark-url`/`OBSIDIAN_MARK_URL`, and the service publishes it to its own
+//! front end at [`MARK_CONFIG_PATH`] so the *browser* loads it.
+//!
+//! That is a different promise and it is stated plainly wherever the flag is
+//! documented: **a browser-visible source is public**.  Anyone who loads the page
+//! and reads its config learns the URL, and the page's visitors contact that host
+//! directly.  It is off by default, the server-side source takes precedence when
+//! both are configured, and an operator who cares about the URL staying private
+//! uses `--logo-source` and a file in `web/assets/` — which is what the project's
+//! own deployment does.
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -33,6 +50,11 @@ use obs_rpc::http::{Response, Status};
 
 /// Where the interface asks for the official logo.
 pub const LOGO_PATH: &str = "/assets/logo-official.png";
+
+/// Where the front end asks which mark to show, when the operator has configured
+/// one that only a browser can reach.  Being same-origin, it costs a deployment
+/// nothing when unused: the document is two fields and no URL.
+pub const MARK_CONFIG_PATH: &str = "/assets/mark.json";
 
 /// Largest logo this service will accept from a source.
 pub const MAX_LOGO_BYTES: usize = 2 * 1024 * 1024;
@@ -106,6 +128,10 @@ enum State {
 #[derive(Debug, Default)]
 pub struct Logo {
     source: Option<LogoSource>,
+    /// A source published to the browser.  See the module docs: this one is
+    /// public by construction, which is why it is never the default and never
+    /// wins over [`Logo::source`].
+    browser: Option<LogoSource>,
     state: Mutex<State>,
 }
 
@@ -114,13 +140,57 @@ impl Logo {
     pub fn new(source: Option<LogoSource>) -> Logo {
         Logo {
             source,
+            browser: None,
             state: Mutex::new(State::Idle),
         }
+    }
+
+    /// Names a source the *browser* loads, for a deployment whose front end can
+    /// reach a host the service cannot.
+    ///
+    /// Only used when no server-side source is configured: the private path wins
+    /// over the public one, so an operator who sets both cannot accidentally
+    /// publish a URL they meant to fetch server-side.
+    pub fn with_browser_source(mut self, browser: Option<LogoSource>) -> Logo {
+        self.browser = if self.source.is_some() { None } else { browser };
+        self
     }
 
     /// Whether a source is configured.  Says nothing about what it is.
     pub fn has_source(&self) -> bool {
         self.source.is_some()
+    }
+
+    /// Whether the front end is told to load a mark from somewhere.
+    pub fn has_browser_source(&self) -> bool {
+        self.browser.is_some()
+    }
+
+    /// The front end's answer to "which mark should I show?".
+    ///
+    /// A file in the static directory is the answer whenever there is one, so a
+    /// served deployment does not even fetch this unless it is configured; and a
+    /// document with no URL in it is what an unconfigured deployment publishes.
+    pub fn mark_config(&self) -> Response {
+        let body = match &self.browser {
+            Some(source) => format!(
+                "{{\"configured\":true,\"url\":{}}}",
+                json_string(source.url())
+            ),
+            None => "{\"configured\":false,\"url\":null}".to_string(),
+        };
+        let mut response = Response::new(Status::OK);
+        response.headers.push((
+            "Content-Type".to_string(),
+            "application/json; charset=utf-8".to_string(),
+        ));
+        // Never cached: the operator can change the flag and restart, and a
+        // browser holding yesterday's answer would keep showing the old mark.
+        response
+            .headers
+            .push(("Cache-Control".to_string(), "no-store".to_string()));
+        response.body = body.into_bytes();
+        response
     }
 
     /// Produces the response for [`LOGO_PATH`].
@@ -275,6 +345,29 @@ const ALLOWED_TYPES: &[&str] = &[
     "image/avif",
 ];
 
+/// Escapes a URL for the one place this service writes one into a body: the
+/// front end's mark configuration, which is only ever emitted when the operator
+/// chose a browser-visible source.
+fn json_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            control if (control as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", control as u32));
+            }
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
+}
+
 fn image(bytes: Vec<u8>, content_type: &str) -> Response {
     Response {
         status: Status::OK,
@@ -420,5 +513,62 @@ mod tests {
         assert!(!printed.contains("private.example"));
         assert!(!printed.contains("secret-logo"));
         assert!(printed.contains("configured by the operator"));
+    }
+}
+
+#[cfg(test)]
+mod mark_tests {
+    use super::*;
+
+    #[test]
+    fn an_unconfigured_deployment_publishes_no_url() {
+        let response = Logo::new(None).mark_config();
+        let body = String::from_utf8(response.body.clone()).expect("utf-8");
+        assert_eq!(body, "{\"configured\":false,\"url\":null}");
+        assert!(!body.contains("http"), "an unconfigured config names no host");
+    }
+
+    #[test]
+    fn a_browser_source_is_published_but_a_server_side_one_wins() {
+        let public = LogoSource::new("https://private.example/mark.png");
+        let response = Logo::new(None).with_browser_source(Some(public.clone())).mark_config();
+        let body = String::from_utf8(response.body.clone()).expect("utf-8");
+        assert!(body.contains("private.example"), "the browser needs the URL: {}", body);
+
+        // Both configured: the server-side source is used and the browser source
+        // is dropped, so a URL the operator meant to keep private is not published
+        // because a second flag was also set.
+        let logo = Logo::new(Some(public.clone())).with_browser_source(Some(public));
+        assert!(logo.has_source());
+        assert!(!logo.has_browser_source());
+        let body = String::from_utf8(logo.mark_config().body.clone()).expect("utf-8");
+        assert_eq!(body, "{\"configured\":false,\"url\":null}");
+    }
+
+    #[test]
+    fn a_url_with_quotes_cannot_break_the_document() {
+        // A URL is operator input, and this is the one place one is written into
+        // a body.  The check that matters is not how it looks but that it parses:
+        // the front end reads this with JSON.parse, so the escaped form has to
+        // survive a round trip through the project's own parser.
+        let awkward = "https://private.example/a\"b\n.png";
+        let logo = Logo::new(None).with_browser_source(Some(LogoSource::new(awkward)));
+        let body = String::from_utf8(logo.mark_config().body.clone()).expect("utf-8");
+        let parsed = obs_primitives::json::parse(&body).expect("the document parses");
+        assert_eq!(parsed.get("configured").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            parsed.get("url").and_then(|v| v.as_str()),
+            Some(awkward),
+            "the URL survives escaping exactly"
+        );
+    }
+
+    #[test]
+    fn the_debug_form_of_a_browser_source_redacts_it_too() {
+        let logo = Logo::new(None)
+            .with_browser_source(Some(LogoSource::new("https://private.example/secret.png")));
+        let rendered = format!("{:?}", logo);
+        assert!(!rendered.contains("private.example"), "{}", rendered);
+        assert!(!rendered.contains("secret"), "{}", rendered);
     }
 }

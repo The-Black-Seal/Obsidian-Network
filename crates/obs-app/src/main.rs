@@ -50,6 +50,8 @@ const KNOWN: &[&str] = &[
     "allowed-origin",
     "sync-ms",
     "print-routes!",
+    "logo-source",
+    "mark-url",
     "help!",
 ];
 
@@ -91,6 +93,14 @@ Usage: obs-app [options]
   --logo-source <url>    fetch the official logo from this URL, server-side
                          (also OBSIDIAN_LOGO_URL; the URL is never sent to a
                          browser and never appears in a log line)
+  --mark-url <url>       publish this URL to the front end, which loads it
+                         directly (also OBSIDIAN_MARK_URL).  For a deployment
+                         whose visitors reach the host but whose server cannot.
+                         That URL is then *public*: a reader of the page's
+                         configuration sees it and visitors' browsers contact the
+                         host.  --logo-source and a file in web/assets/ are the
+                         private alternatives, and a server-side source wins if
+                         both are configured
 
   --require-key          require an API key for explorer reads
   --allowed-origin <o>   extra origin allowed to make state-changing requests (repeatable)
@@ -224,6 +234,12 @@ fn main() -> ExitCode {
             .get("logo-source")
             .map(|url| url.to_string())
             .or_else(|| std::env::var("OBSIDIAN_LOGO_URL").ok())
+            .filter(|url| !url.trim().is_empty())
+            .map(LogoSource::new),
+        mark_url: args
+            .get("mark-url")
+            .map(|url| url.to_string())
+            .or_else(|| std::env::var("OBSIDIAN_MARK_URL").ok())
             .filter(|url| !url.trim().is_empty())
             .map(LogoSource::new),
         ..AppConfig::default()
@@ -364,13 +380,21 @@ fn main() -> ExitCode {
         // A file in the static directory wins, so name the one actually there —
         // the served candidates are `logo-official.*`, and reporting a `.png`
         // that does not exist would send an operator looking for the wrong file.
-        match (&app.config().static_dir, &app.config().logo_source) {
-            (Some(dir), _) if obs_app::logo::installed_file(dir).is_some() => {
+        match (
+            &app.config().static_dir,
+            &app.config().logo_source,
+            &app.config().mark_url,
+        ) {
+            (Some(dir), _, _) if obs_app::logo::installed_file(dir).is_some() => {
                 obs_app::logo::installed_file(dir)
                     .map(|(path, _)| path.display().to_string())
                     .unwrap_or_default()
             }
-            (_, Some(_)) => "from the configured source (never sent to a browser)".to_string(),
+            (_, Some(_), _) => "from the configured source (never sent to a browser)".to_string(),
+            (_, _, Some(_)) => {
+                "the front end loads it from the configured mark URL (that URL is public)"
+                    .to_string()
+            }
             _ => "none; the interface uses its drawn mark".to_string(),
         }
     );
@@ -398,5 +422,37 @@ fn main() -> ExitCode {
             eprintln!("obs-app: the service stopped: {}", error);
             ExitCode::from(1)
         }
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+
+    /// Every flag the help text offers must be a flag the parser accepts.
+    ///
+    /// Two operator commands in this workspace were documented and unusable —
+    /// `obs-app --logo-source` and `obs-cli invite mint --store` — for exactly
+    /// this reason: the help text and the accepted-flag list were written in
+    /// different places, and nothing compared them.  This compares them.
+    #[test]
+    fn every_flag_in_the_help_text_is_accepted() {
+        let text = usage();
+        let mut checked = 0;
+        for word in text.split(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == ',') {
+            let Some(flag) = word.strip_prefix("--") else { continue };
+            let flag = flag.trim_end_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '-'));
+            if flag.is_empty() || flag == "help" {
+                continue;
+            }
+            let boolean = format!("{}!", flag);
+            assert!(
+                KNOWN.contains(&flag) || KNOWN.contains(&boolean.as_str()),
+                "the help text offers --{} but the parser does not accept it",
+                flag
+            );
+            checked += 1;
+        }
+        assert!(checked >= 5, "the help text names too few flags to be the real one");
     }
 }

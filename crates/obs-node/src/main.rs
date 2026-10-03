@@ -570,3 +570,35 @@ fn write_private(path: &std::path::Path, document: &str) -> Result<(), String> {
         .map_err(|error| format!("{}: {}", path.display(), error))?;
     Ok(())
 }
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+
+    /// Every flag the help text offers must be a flag the parser accepts.
+    ///
+    /// Two operator commands in this workspace were documented and unusable —
+    /// `obs-app --logo-source` and `obs-cli invite mint --store` — for exactly
+    /// this reason: the help text and the accepted-flag list were written in
+    /// different places, and nothing compared them.  This compares them.
+    #[test]
+    fn every_flag_in_the_help_text_is_accepted() {
+        let text = usage();
+        let mut checked = 0;
+        for word in text.split(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == ',') {
+            let Some(flag) = word.strip_prefix("--") else { continue };
+            let flag = flag.trim_end_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '-'));
+            if flag.is_empty() || flag == "help" {
+                continue;
+            }
+            let boolean = format!("{}!", flag);
+            assert!(
+                KNOWN.contains(&flag) || KNOWN.contains(&boolean.as_str()),
+                "the help text offers --{} but the parser does not accept it",
+                flag
+            );
+            checked += 1;
+        }
+        assert!(checked >= 5, "the help text names too few flags to be the real one");
+    }
+}

@@ -1,6 +1,6 @@
 # 21 — Acceptance
 
-The acceptance run is `scripts/acceptance.sh`: **102 numbered checks** over the
+The acceptance run is `scripts/acceptance.sh`: **104 numbered checks** over the
 whole system. It exits non-zero if any check fails, so it is a gate, not a report.
 Half the checks read the live deployment over HTTP exactly as a person or a wallet
 would; the other half are the source-level and test-suite gates that prove the
@@ -27,9 +27,9 @@ on one origin, with the real compiled wallet module at
 and staging on 8400/9400/8184 — were running on the same host at the same time
 from the same checkout, which is what check 101 exists to pin down.
 
-Rust suite: 362 passed, 0 failed. JavaScript suite: 15 passed, 0 failed.
+Rust suite: 370 passed, 0 failed. JavaScript suite: 19 passed, 0 failed.
 
-## The 102 checks
+## The 104 checks
 
 | # | Check | Result |
 |---|-------|--------|
@@ -135,6 +135,8 @@ Rust suite: 362 passed, 0 failed. JavaScript suite: 15 passed, 0 failed.
 | 100 | no private key, seed phrase, genesis invitation or logo source is in the tree | pass |
 | 101 | the four networks have their own ports and only test networks publish an invitation | pass |
 | 102 | the operator can mint a genesis invitation, and the code is never echoed back | pass |
+| 103 | the mark configuration publishes no host unless the operator named one | pass |
+| 104 | the page falls back to its own drawn seal when a mark cannot load | pass |
 
 ## What the run found
 

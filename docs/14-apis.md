@@ -83,6 +83,7 @@ The Explorer and the Developer Portal, plus the node read-through.
 | POST | `/node/api/v1/transactions` | — | forwards an already-signed transaction |
 | POST | `/node/api/v1/account/proof` | — | forwards an account's signed proof of its own state |
 | GET | `/assets/logo-official.png` | — | the deployment's official mark, from this origin |
+| GET | `/assets/mark.json` | — | which mark the front end should show (no URL unless the operator published one) |
 | GET | `/healthz` | — | liveness |
 
 ### The official mark
@@ -114,6 +115,32 @@ Only `image/*` answers are accepted (a source that returns an HTML login page is
 refused, not served as a logo), only images up to 2 MiB, and a local file always
 wins over the network. When neither is available the route answers `404` and the
 page uses its drawn seal — a missing logo costs branding, never the page.
+
+### When the service cannot reach the mark, but the browser can
+
+A deployment in a sandbox, behind an egress allowlist, or on a node whose only
+route out is through a proxy the mark's host does not allow may be unable to fetch
+the image even though the people visiting the page can. For that case an operator
+may name a **third** source:
+
+```sh
+obs-app --mark-url <url>            # or OBSIDIAN_MARK_URL
+```
+
+The service publishes that URL at `GET /assets/mark.json` and `web/js/mark.js`
+loads it in the browser; the drawn seal remains the fallback if the browser cannot
+reach the host either. The document is two fields and is not cached:
+
+```json
+{"configured":true,"url":"<the operator's URL>"}
+```
+
+This is the one arrangement in which the mark's URL becomes **public**: anyone who
+loads the page and reads this configuration learns it, and the page's visitors
+contact that host directly. It is therefore off by default, a file in `web/assets/`
+and `--logo-source` both take precedence over it, and an operator who wants the
+origin private should use those instead. An unconfigured deployment publishes
+`{"configured":false,"url":null}` and no host at all, which check 103 verifies.
 
 ### API keys
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# The acceptance run: 102 numbered checks over the whole system.
+# The acceptance run: 104 numbered checks over the whole system.
 #
 # Half of these are greps and unit-level gates that need nothing running; the
 # other half drive a live devnet over HTTP, exactly as a person or a wallet
@@ -386,12 +386,22 @@ check 91 "a revoked key is refused" \
     cargo test -p obs-app --test explorer --quiet 2>/dev/null
 check 92 "an unknown API key is a 404 and a bad one is a 403" \
     grep -q "Status::NOT_FOUND" crates/obs-app/src/api.rs
+# The interface's mark has three arrangements, and the third is the one that can
+# leak a source if it is wrong: an operator who publishes `--mark-url` because
+# their visitors can reach a host this service cannot.  The default must publish
+# nothing, and the page must ship a fallback for the case where even the browser
+# cannot reach it.
 check 93 "the interface is served from the application, with one origin for the official mark" \
     bash -c "curl -sf $BASE/ | grep -q 'Obsidian Network' && curl -sf $BASE/ | grep -q 'assets/logo-official.png'"
 
 # ---------------------------------------------------------------------------
 section "Authority hierarchy and fail-closed (94-100)"
 # ---------------------------------------------------------------------------
+
+check 103 "the mark configuration publishes no host unless the operator named one" \
+    bash -c "body=\$(curl -sf $BASE/assets/mark.json) && printf '%s' \"\$body\" | grep -q '\"configured\":false' && ! printf '%s' \"\$body\" | grep -q 'http'"
+check 104 "the page falls back to its own drawn seal when a mark cannot load" \
+    bash -c "grep -q \"this.onerror=null;this.src='assets/logo.svg'\" web/index.html && grep -q \"export const FALLBACK = 'assets/logo.svg'\" web/js/mark.js"
 
 check 94 "the interface cannot mint: no route writes a balance" \
     bash -c '! grep -rn "set_balance\|credit(\|mint(" crates/obs-app/src crates/obs-gateway/src | grep -v "//" | grep -q .'

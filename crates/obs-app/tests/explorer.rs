@@ -775,6 +775,32 @@ fn the_official_logo_is_fetched_server_side_and_never_hotlinked() {
     assert!(!printed.contains("private.example"), "a source must not be printable");
 }
 
+/// The mark configuration an operator can publish to the front end.
+///
+/// This is the second of the two sources, and the opposite trade: a URL the
+/// service cannot reach but the deployment's visitors can.  What matters for the
+/// contract is the default — an unconfigured deployment publishes no host at all,
+/// so the page cannot leak a source the operator did not choose to publish.
+#[test]
+fn the_mark_configuration_is_empty_until_an_operator_publishes_one() {
+    let harness = Harness::launch(false);
+
+    let response = harness.client().get(&harness.url("/assets/mark.json")).expect("a response");
+    assert_eq!(response.status.code(), 200);
+    let body = String::from_utf8(response.body.clone()).expect("utf-8");
+    assert_eq!(body, r#"{"configured":false,"url":null}"#);
+    assert!(!body.contains("http"), "an unconfigured deployment names no host: {}", body);
+
+    // And it is not cacheable: the operator can change the flag and restart, and
+    // a browser holding yesterday's answer would keep showing the old mark.
+    let cache_control = response
+        .headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("cache-control"))
+        .map(|(_, value)| value.as_str());
+    assert_eq!(cache_control, Some("no-store"));
+}
+
 /// The operator's own copy of the mark, put in the static directory.
 ///
 /// Two things are pinned here.  The route is `/assets/logo-official.png`

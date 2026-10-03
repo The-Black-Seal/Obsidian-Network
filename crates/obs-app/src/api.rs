@@ -57,6 +57,13 @@ pub struct AppConfig {
     /// reaches a browser and never appears in the repository; see [`crate::logo`].
     /// Its `Debug` implementation redacts the URL, so no log line can leak it.
     pub logo_source: Option<LogoSource>,
+    /// A mark URL the *front end* loads, for a deployment whose browsers can
+    /// reach a host this service cannot.
+    ///
+    /// The opposite trade to [`AppConfig::logo_source`] and stated as such: the
+    /// URL is published to the page, and the visitors' browsers contact the host.
+    /// Ignored when `logo_source` is set or a mark file is installed.
+    pub mark_url: Option<LogoSource>,
 }
 
 impl Default for AppConfig {
@@ -70,6 +77,7 @@ impl Default for AppConfig {
             allowed_origins: Vec::new(),
             static_dir: None,
             logo_source: None,
+            mark_url: None,
         }
     }
 }
@@ -106,7 +114,8 @@ impl App {
             accounts: None,
             gateway: None,
             files,
-            logo: Logo::new(config.logo_source.clone()),
+            logo: Logo::new(config.logo_source.clone())
+                .with_browser_source(config.mark_url.clone()),
             config,
             clock: Box::new(|| {
                 u64::try_from(
@@ -471,6 +480,9 @@ impl Handler for App {
             (Method::Get, ["assets", "logo-official.png"]) => {
                 self.logo.serve(self.config.static_dir.as_deref())
             }
+            // Which mark the front end should show.  Two fields, and no URL in it
+            // unless the operator chose a browser-visible source (see `crate::logo`).
+            (Method::Get, ["assets", "mark.json"]) => self.logo.mark_config(),
             _ => match &self.files {
                 // Anything that is not an API path may be a page or an asset.
                 Some(files) => match files.serve(request) {
