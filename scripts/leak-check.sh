@@ -38,6 +38,31 @@ KEY_NEEDLE="-----BEGIN ""PRIVATE KEY-----"
 EXCLUDES=(--exclude-dir=.git --exclude-dir=target --exclude-dir=node_modules)
 FAILED=0
 
+# What this scans is what would be published: the tracked files, plus anything
+# untracked that is *not* ignored and could therefore be committed by accident.
+# A gitignored file — a deployment's `.env.local`, a data directory, a log — is
+# absent from the repository by construction, so a secret in one is not a leak;
+# failing on it would train an operator to ignore this check.
+list_files() {
+    if git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+        git -C "$ROOT" ls-files --cached --others --exclude-standard
+    else
+        find . -type f | sed 's|^\./||'
+    fi
+}
+
+# Scans the repository's own files for a pattern, printing matches as
+# `path:line:text`.  Reads the list once so the three checks below are consistent.
+scan() { # scan <extended-regex> [extra grep flags...]
+    local pattern="$1"
+    shift
+    local file
+    while IFS= read -r file; do
+        [ -f "$ROOT/$file" ] || continue
+        grep -nE "$pattern" "$@" -- "$ROOT/$file" 2>/dev/null | sed "s|$ROOT/||"
+    done < <(list_files)
+}
+
 report() {
     local what="$1"
     shift
@@ -52,15 +77,14 @@ report() {
 ALLOWED='127[.]0[.]0[.]1|localhost|0[.]0[.]0[.]0|private[.]example|example[.]com' 
 
 # --- 1. the invitation and private keys ---------------------------------------
-if hits="$(grep -rnE "$INVITE_NEEDLE|$KEY_NEEDLE" "${EXCLUDES[@]}" . 2>/dev/null)"; then
+if hits="$(scan "$INVITE_NEEDLE|$KEY_NEEDLE")"; then
     report "the genesis invitation or a private key is in the tree:" "$hits"
 fi
 
 # --- 2. an absolute URL that names a logo -------------------------------------
 # Loopback and RFC 2606 placeholders are the stand-ins the tests use; a real
 # operator's mark is served from a configured URL that appears nowhere.
-if hits="$(grep -rniE 'https?://[^ "'"'"']*logo' "${EXCLUDES[@]}" . 2>/dev/null \
-        | grep -vE "$ALLOWED")"; then
+if hits="$(scan 'https?://[^ "'"'"']*logo' -i | grep -vE "$ALLOWED")"; then
     report "a logo is referenced by absolute URL:" "$hits"
 fi
 
@@ -68,6 +92,13 @@ fi
 if hits="$(grep -nE 'rel="(icon|alternate icon)"|class="mark"' web/index.html 2>/dev/null \
         | grep -E 'https?://')"; then
     report "the page loads its icon or mark off-origin:" "$hits"
+fi
+
+# --- 5. nothing the deployment serves names a host ----------------------------
+# The page, its scripts and its stylesheet are what a visitor can read; the mark's
+# origin may be configuration, but it must not be in what this repository ships.
+if hits="$(scan 'https?://' --include='*.html' 2>/dev/null | grep -E '^web/' | grep -vE "$ALLOWED")"; then
+    report "a served page names an absolute URL:" "$hits"
 fi
 
 # --- 4. an installed image is recorded by hash, not by origin -----------------

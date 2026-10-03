@@ -398,8 +398,20 @@ check 93 "the interface is served from the application, with one origin for the 
 section "Authority hierarchy and fail-closed (94-100)"
 # ---------------------------------------------------------------------------
 
-check 103 "the mark configuration publishes no host unless the operator named one" \
-    bash -c "body=\$(curl -sf $BASE/assets/mark.json) && printf '%s' \"\$body\" | grep -q '\"configured\":false' && ! printf '%s' \"\$body\" | grep -q 'http'"
+# The invariant is not "a host is never published" — an operator may deliberately
+# publish one with --mark-url, and then it is public by design.  It is that the
+# *page* and the route table never name one, so the served interface is identical
+# either way, and that the configuration is always one of the two valid shapes.
+check 103 "the page and the route table name no mark host, whatever the configuration" \
+    bash -c "body=\$(curl -sf $BASE/assets/mark.json) || exit 1
+        printf '%s' \"\$body\" | grep -qE '\"configured\":(true|false)' || exit 1
+        printf '%s' \"\$body\" | grep -q '\"url\":' || exit 1
+        ! curl -sf $BASE/ | grep -qE 'https?://' || exit 1
+        ! curl -sf $BASE/v1/routes | grep -qE 'https?://' || exit 1
+        for asset in js/app.js js/mark.js css/app.css; do
+            curl -sf \"$BASE/\$asset\" | grep -qE 'https?://' && exit 1
+        done
+        exit 0"
 check 104 "the page falls back to its own drawn seal when a mark cannot load" \
     bash -c "grep -q \"this.onerror=null;this.src='assets/logo.svg'\" web/index.html && grep -q \"export const FALLBACK = 'assets/logo.svg'\" web/js/mark.js"
 

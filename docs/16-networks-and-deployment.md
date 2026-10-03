@@ -224,6 +224,46 @@ after that is seconds.
   incremental, and a running devnet resumes the chain it has (its genesis record
   wins over any flag, so a restart cannot silently re-found it).
 
+## The official mark on a deployment
+
+Three arrangements, in precedence order, and only the first keeps the mark's
+origin private:
+
+1. **A file.** `bash scripts/sync-logo.sh <url|file>` on a machine that can reach
+   the source installs `web/assets/logo-official.<ext>` and records its hash in
+   `web/assets/logo-official.provenance`. Commit it and every deployment serves
+   the image from its own origin with no network at all. This is the arrangement
+   the repository itself uses.
+2. **A server-side source.** `obs-app --logo-source <url>` (or
+   `OBSIDIAN_LOGO_URL`) fetches the image and serves it from the service's origin:
+   the URL is configuration, never source, and never reaches a browser or a log
+   line.
+3. **A browser source.** `obs-app --mark-url <url>` (or `OBSIDIAN_MARK_URL`) is for
+   the deployment whose *visitors* can reach the host but whose *server* cannot —
+   a sandbox, an egress allowlist, a proxy the host does not accept. The URL is
+   published at `/assets/mark.json` and `web/js/mark.js` loads it in the page,
+   falling back to the drawn seal if the browser cannot reach it either. **That
+   URL is public**: anyone reading the page's configuration sees it, and the
+   visitors' browsers contact the host directly.
+
+A deployment's local configuration belongs in a gitignored file — `.env.local` is
+ignored by this repository's `.gitignore` — so the URL is present on the machine
+and absent from the tree:
+
+```sh
+# .env.local, mode 0600, never committed
+OBSIDIAN_MARK_URL=<the mark's url>
+```
+
+```sh
+set -a; . ./.env.local; set +a
+obs-app --network mainnet --port 8181 --node-url http://127.0.0.1:8200 --static-dir web
+```
+
+Whatever the arrangement, the page, its scripts, its stylesheet and the route
+table name no host — acceptance check 103 asserts exactly that — so the served
+interface is identical on every deployment.
+
 ## Oracle Cloud: a public node in the free tier
 
 Oracle's Always Free tier is the cheapest way to put the network on a public IP,
@@ -422,6 +462,8 @@ do the TLS.
 | node | `--keystore` / `OBS_WALLET_PASSWORD` | the key that proposes and claims |
 | node | `--mine`, `--validator` | whether this node proposes and attests |
 | app | `--bind` | `127.0.0.1` when a TLS terminator is in front, `0.0.0.0` when it is not |
+| app | `--logo-source` / `OBSIDIAN_LOGO_URL` | the service fetches the official mark server-side; the URL never reaches a browser |
+| app | `--mark-url` / `OBSIDIAN_MARK_URL` | the *front end* loads the mark, for a deployment whose visitors reach a host the service cannot. That URL is public by design; a file and `--logo-source` both win over it |
 | app | `--node-url` | which node it follows |
 | app | `--require-key` | refuse anonymous readers on the explorer routes |
 | app | `--store`, `--accounts-store` | the portal's keys and the account registry |

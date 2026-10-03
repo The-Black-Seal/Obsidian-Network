@@ -24,6 +24,15 @@
 # file (`--invite-file`), and it is the only network whose founder holds real
 # value.  Read the last section of the header before pointing this at mainnet.
 #
+# A deployment's own configuration — the mark URL, anything else an operator
+# would rather not commit — lives in a file outside this checkout, sourced before
+# the services start:
+#
+#   --env-file <path>        default: $HOME/.config/obsidian/env, when it exists
+#
+# The file is a plain `KEY=value` list, sourced by the shell, so the URL is on the
+# machine and never in the repository.
+#
 # What "up" means, in order, because the order matters:
 #
 #   1. the binaries (a release build; `--no-build` to require them already)
@@ -60,6 +69,7 @@ BLOCK_INTERVAL_MS=5000
 BUILD=1
 ASSUME_YES=0
 INVITE_FILE=""
+ENV_FILE="${OBSIDIAN_ENV_FILE:-$HOME/.config/obsidian/env}"
 
 # The ports each network listens on, from `obs_primitives::network::Network`.
 # Written out rather than read from a built binary: this runs before the build.
@@ -83,6 +93,7 @@ while [ "$#" -gt 0 ]; do
         start|stop|status|reset) ACTION="$1" ;;
         --network) NETWORK="${2:?--network needs a name}" ; shift ;;
         --invite-file) INVITE_FILE="${2:?--invite-file needs a path}" ; shift ;;
+        --env-file) ENV_FILE="${2:?--env-file needs a path}" ; shift ;;
         --dir) DIR="${2:?--dir needs a path}" ; shift ;;
         --ui-port) UI_PORT="${2:?--ui-port needs a number}" ; shift ;;
         --api-port) API_PORT="${2:?--api-port needs a number}" ; shift ;;
@@ -134,6 +145,19 @@ NODE_PID="$DIR/node.pid"
 APP_PID="$DIR/app.pid"
 
 SELF="bash scripts/quickstart.sh"
+# The deployment's own configuration, if the operator keeps one.  Sourced in a
+# subshell first so a mistake in the file is reported here rather than half way
+# through a start-up; the values are then exported for the processes below.
+if [ -f "$ENV_FILE" ]; then
+    if ! ( set -a; . "$ENV_FILE" ) >/dev/null 2>&1; then
+        echo "quickstart: $ENV_FILE could not be read as a list of KEY=value lines" >&2
+        exit 2
+    fi
+    set -a
+    . "$ENV_FILE"
+    set +a
+fi
+
 say() { printf '%s: %s\n' "$NETWORK" "$1"; }
 die() { printf '%s: %s\n' "$NETWORK" "$1" >&2; exit 1; }
 
@@ -453,6 +477,9 @@ EOF
     say "        --static-dir $ROOT/web --accounts --accounts-store $DIR/accounts.json \\"
     say "        --store $DIR/index.json --authority-key $AUTHORITY_KEY"
     echo
+    if [ -f "$ENV_FILE" ]; then
+        say "  deployment config $ENV_FILE (sourced; not part of the checkout)"
+    fi
     say "  claim mining rewards with the founder wallet:"
     say "    $BIN/obs-cli claim --node-url $NODE_URL \\"
     say "        --keystore $KEYSTORE --password-file $PASSWORD_FILE"

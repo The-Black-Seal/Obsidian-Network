@@ -135,7 +135,7 @@ Rust suite: 370 passed, 0 failed. JavaScript suite: 19 passed, 0 failed.
 | 100 | no private key, seed phrase, genesis invitation or logo source is in the tree | pass |
 | 101 | the four networks have their own ports and only test networks publish an invitation | pass |
 | 102 | the operator can mint a genesis invitation, and the code is never echoed back | pass |
-| 103 | the mark configuration publishes no host unless the operator named one | pass |
+| 103 | the page and the route table name no mark host, whatever the configuration | pass |
 | 104 | the page falls back to its own drawn seal when a mark cannot load | pass |
 
 ## What the run found
@@ -164,6 +164,15 @@ it passed, and its evidence was discarded by a `2>/dev/null` in the check. The
 test now asserts the exact debug form and the absence of the phrase and the keys;
 the check keeps its log and prints the failing test's name. The rule is in
 [Testing](19-testing.md#a-test-may-not-assert-a-property-of-a-random-values-spelling).
+
+A nineteenth and twentieth came from installing the official mark: `obs-app
+--logo-source` was documented and rejected by the parser (the same drift as
+`obs-cli invite mint`, now guarded by a test in each binary that compares the help
+text against the accepted flags), and `scripts/leak-check.sh` scanned the *working
+directory* rather than the repository, so a deployment's gitignored `.env.local`
+made it fail — a check that fails on a file the repository does not contain is a
+check an operator learns to ignore. It now scans what would actually be
+published: tracked files plus untracked files that are not ignored.
 
 A seventeenth, found while writing this document's own instructions: the
 documented way to mint a genesis invitation — `obs-cli invite mint --store … --code
