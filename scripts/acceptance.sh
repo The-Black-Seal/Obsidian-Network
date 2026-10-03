@@ -288,8 +288,17 @@ check 54 "the keystore is sealed with Argon2id and ChaCha20-Poly1305" \
 # that could have said so.
 check 55 "the wasm module exports the ABI the interface expects" \
     node --test web/tests/wallet-module.test.mjs
+# The wallet suite is randomized (it generates fresh wallets), so a failure here
+# has to say *which* test failed and why.  The first version of this check sent
+# stderr to /dev/null and reported only a progress line, which is exactly the
+# kind of evidence-throwing the flake rule in docs/19-testing.md warns about: the
+# log now survives and the failing names are printed.
 check 56 "a wallet created in the module has three distinct keys" \
-    cargo test -p obs-wallet --quiet 2>/dev/null
+    bash -c 'log=/tmp/obs-wallet-suite.log
+        if cargo test -p obs-wallet >"$log" 2>&1; then exit 0; fi
+        echo "the wallet suite failed; full output: $log"
+        grep -E "^test .* FAILED|panicked at|^failures:" "$log" | head -4
+        exit 1'
 check 57 "the installed wasm artifact matches the current source" \
     bash scripts/build-web.sh --check
 check 58 "the interface shows no private key when a wallet is created" \

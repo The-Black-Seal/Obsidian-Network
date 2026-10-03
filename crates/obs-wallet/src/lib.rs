@@ -380,13 +380,40 @@ mod tests {
 
     #[test]
     fn debug_output_never_contains_a_private_key() {
-        let (wallet, phrase) = Wallet::generate(MAINNET, 7).unwrap();
-        let rendered = format!("{:?}", wallet);
-        assert!(rendered.contains("<redacted>"));
-        assert!(!rendered.contains(&phrase));
-        // And the phrase's words are not in the debug output either.
-        for word in phrase.split_whitespace().take(3) {
-            assert!(!rendered.contains(word), "the debug output leaked a phrase word");
+        // The canonical BIP-39 vector phrase, plus a freshly generated wallet, so
+        // that both the fixed and the random path are covered.
+        let canonical = "abandon abandon abandon abandon abandon abandon abandon abandon \
+                         abandon abandon abandon abandon abandon abandon abandon abandon \
+                         abandon abandon abandon abandon abandon abandon abandon art";
+        let fixed = Wallet::from_phrase(MAINNET, canonical, "", 0).unwrap();
+        let (generated, phrase) = Wallet::generate(MAINNET, 7).unwrap();
+
+        for (wallet, secret) in [(&fixed, canonical), (&generated, phrase.as_str())] {
+            let rendered = format!("{:?}", wallet);
+
+            // Exact, not a substring hunt: the debug form is the public fields and
+            // three redactions, and nothing else.  The previous version of this
+            // test asserted that no phrase *word* appeared anywhere in the output,
+            // which is a coin flip rather than a property: "main" is inside
+            // "mainnet", "over" is inside "recovery_key", and an address is bech32
+            // text that can contain a word by chance.  It failed about once in
+            // forty runs and would have gone on leaking nothing while it did.
+            let expected = format!(
+                "Wallet {{ network: {:?}, account: {}, address: {:?}, wallet_key: \"<redacted>\", \
+                 node_key: \"<redacted>\", recovery_key: \"<redacted>\" }}",
+                wallet.network.name,
+                wallet.account,
+                wallet.address().to_string()
+            );
+            assert_eq!(rendered, expected, "the debug form must be the public fields only");
+
+            // And the secret itself is nowhere in it.  A phrase is a wide string
+            // with spaces: this one cannot be a coincidence.
+            assert!(!rendered.contains(secret), "the debug output contains the phrase");
+            let (wallet_key, node_key, recovery_key) = wallet.public_keys().to_hex();
+            for key in [wallet_key, node_key, recovery_key] {
+                assert!(!rendered.contains(&key), "the debug output contains a key");
+            }
         }
     }
 }

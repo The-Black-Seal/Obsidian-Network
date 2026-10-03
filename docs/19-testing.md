@@ -15,6 +15,29 @@
 Current counts: **362 Rust tests**, **15 JavaScript tests**, **101 acceptance
 checks**.
 
+## A test may not assert a property of a random value's spelling
+
+The suite generates fresh keys, wallets and addresses on purpose — a fixed vector
+cannot catch a mistake that only appears for some inputs. But that means an
+assertion about *how a generated value happens to be spelled* is not a property,
+it is a coin flip with a very long odds ratio, and it will fail in production
+runs and pass in front of you.
+
+The concrete case: a test asserted that no word of a recovery phrase appears in a
+wallet's `Debug` output. Two of the three words it checked were inside the *field
+names* — "main" is in "mainnet", "over" is in "recovery_key" — and an address is
+bech32 text that can contain a dictionary word by chance. Measured over 5,000
+generated wallets, 127 of them tripped it: a 2.5 % flake that failed the
+acceptance run and had nothing to do with a leak. The replacement asserts the
+exact debug form (public fields and three redactions, nothing else) and that the
+phrase and the keys are absent — deterministic, and strictly stronger.
+
+The rule: assert structure, counts, round trips and inequalities. If an
+assertion's truth depends on a value it does not control, either fix the value or
+assert something that is true for every value. The same rule bans discarding a
+failing check's output — a check that cannot say why it failed costs more than no
+check at all.
+
 ## What the tests specifically refuse to assume
 
 * **No floating point anywhere.** Monetary and consensus tests use integer

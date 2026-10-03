@@ -21,7 +21,7 @@ all checks passed
 ```
 
 Deployment under test: devnet (chain id 3) founded by `scripts/quickstart.sh`,
-node at height ~100, obs-app serving the interface, the explorer and the portal
+node at height ~700 (a 1-second block interval), obs-app serving the interface, the explorer and the portal
 on one origin, with the real compiled wallet module at
 `web/wasm/obsidian-wallet.wasm`. Two further networks — testnet on 8300/9300/8182
 and staging on 8400/9400/8184 — were running on the same host at the same time
@@ -151,6 +151,16 @@ network called mainnet with a *published* invitation, so mainnet now has no
 default invitation at all and requires the operator's own (`--invite`), which is
 the only thing that can authorise the genesis allocation on a network carrying
 real value:
+
+A sixteenth defect, found by a failing acceptance run rather than by reading:
+check 56's wallet test asserted that no recovery-phrase word appears in a wallet's
+`Debug` output, and two of the words it looked for were inside the field names —
+"main" in "mainnet", "over" in "recovery_key" — while a bech32 address can hold a
+dictionary word by chance. It failed about once in forty runs, proved nothing when
+it passed, and its evidence was discarded by a `2>/dev/null` in the check. The
+test now asserts the exact debug form and the absence of the phrase and the keys;
+the check keeps its log and prints the failing test's name. The rule is in
+[Testing](19-testing.md#a-test-may-not-assert-a-property-of-a-random-values-spelling).
 
 
 1. **The interface did not boot.** The page's shell never painted: the app
