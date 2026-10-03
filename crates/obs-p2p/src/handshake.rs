@@ -55,6 +55,11 @@ pub struct HandshakeOutcome {
     pub head: Hash32,
     /// The peer's head height.
     pub height: u64,
+    /// The peer's genesis protocol timestamp.
+    pub genesis_timestamp: u64,
+    /// The registration authority the peer reported (all-zero when the peer
+    /// has not learned it yet).
+    pub registration_authority: [u8; 32],
     /// The nonce this side contributed.
     pub nonce: [u8; 32],
     /// The nonce the peer contributed.
@@ -85,7 +90,17 @@ pub enum HandshakeError {
     /// The peer sent nothing for too long.
     Timeout,
     /// The peer promised a frame larger than the protocol allows.
-    TooLarge,
+    /// The frame header promised more bytes than the protocol allows.  The
+    /// bytes that produced it are carried along: a frame length is a fact about
+    /// the stream, and "promised 3.2 GB" versus "promised 9 MB on a 8 MB limit"
+    /// is the difference between a desynchronised stream and a peer that is
+    /// genuinely over-sending.
+    TooLarge {
+        /// Length the peer's header promised.
+        length: usize,
+        /// Largest frame this node accepts.
+        limit: usize,
+    },
     /// The peer refused, with a reason.
     Refused {
         /// Code the peer sent.
@@ -98,15 +113,32 @@ pub enum HandshakeError {
 impl HandshakeError {
     /// True when the failure means "this peer is not trustworthy", as opposed
     /// to "this peer is on another network" or "the socket broke".
+    ///
+    /// `SelfConnect` is deliberately not a violation: a node that meets its own
+    /// identity has made an ordinary configuration mistake — two nodes sharing
+    /// one identity file, or a dial to itself — not an attack, and the handshake
+    /// already refuses it. Treating it as a violation bans the address, and on
+    /// one host that address is every co-located peer.
     pub fn is_protocol_violation(&self) -> bool {
+        // The line is drawn at what a peer has *demonstrated*.  A violation is
+        // only a peer that speaks this protocol and then breaks it: a bad
+        // signature, a nonce that does not come back, or a message this stage
+        // should never receive.
+        //
+        // Everything else is a mismatch, not hostility, and the difference
+        // matters because a violation bans the peer's address for a while.  An
+        // oversize frame header or a connection that ends mid-handshake is what
+        // an HTTP health probe, a port scanner, a browser tab or a peer still
+        // starting up looks like from here — and on a host running several
+        // nodes, banning that address for a probe takes down every co-located
+        // peer along with it.  That is exactly what happened on the devnet: an
+        // HTTP request to the peer port made a node ban loopback and drop the
+        // real peer it was already syncing from.
         matches!(
             self,
             HandshakeError::BadSignature
                 | HandshakeError::NonceMismatch
                 | HandshakeError::UnexpectedMessage(_)
-                | HandshakeError::SelfConnect
-                | HandshakeError::Incomplete
-                | HandshakeError::TooLarge
         )
     }
 }
@@ -128,7 +160,11 @@ impl core::fmt::Display for HandshakeError {
             HandshakeError::SelfConnect => write!(f, "the peer is this node"),
             HandshakeError::NonceMismatch => write!(f, "the peer did not echo our nonce"),
             HandshakeError::Timeout => write!(f, "the peer sent nothing for too long"),
-            HandshakeError::TooLarge => write!(f, "the peer promised an oversized frame"),
+            HandshakeError::TooLarge { length, limit } => write!(
+                f,
+                "the peer promised a frame of {} bytes, over the {} byte limit",
+                length, limit
+            ),
             HandshakeError::Refused { code, detail } => {
                 write!(f, "the peer refused the connection ({:?}): {}", code, detail)
             }
@@ -271,6 +307,8 @@ pub fn build_hello(
         chain_id: config.chain_id,
         protocol_version: config.protocol_version,
         genesis_hash: config.genesis_hash,
+        genesis_timestamp: config.genesis_timestamp,
+        registration_authority: config.registration_authority,
         node_key: config.node_key.public_key(),
         listen_port: config.listen_port,
         nonce,
@@ -283,6 +321,8 @@ pub fn build_hello(
         hello.chain_id,
         hello.protocol_version,
         &hello.genesis_hash,
+        hello.genesis_timestamp,
+        &hello.registration_authority,
         &hello.node_key,
         &hello.nonce,
         &hello.remote_nonce,
@@ -302,6 +342,21 @@ pub fn verify_hello(config: &PeerConfig, hello: &Hello) -> Result<(), HandshakeE
     if hello.genesis_hash != config.genesis_hash {
         return Err(HandshakeError::WrongGenesis);
     }
+    // The anchor already binds the epoch, so this can only fire when one side
+    // has no genesis at all; it is kept explicit because "same anchor, then a
+    // different epoch" is the kind of thing a reader must not have to infer.
+    if config.genesis_timestamp != 0 && hello.genesis_timestamp != config.genesis_timestamp {
+        return Err(HandshakeError::WrongGenesis);
+    }
+    // A peer that reports no authority has not learned the network's genesis
+    // yet: it is joining, exactly as this node might be, and the handshake is
+    // how it learns.  Once either side knows the authority, they must agree.
+    if config.registration_authority != [0u8; 32]
+        && hello.registration_authority != [0u8; 32]
+        && hello.registration_authority != config.registration_authority
+    {
+        return Err(HandshakeError::WrongGenesis);
+    }
     if hello.node_key == config.node_key.public_key() {
         return Err(HandshakeError::SelfConnect);
     }
@@ -309,6 +364,8 @@ pub fn verify_hello(config: &PeerConfig, hello: &Hello) -> Result<(), HandshakeE
         hello.chain_id,
         hello.protocol_version,
         &hello.genesis_hash,
+        hello.genesis_timestamp,
+        &hello.registration_authority,
         &hello.node_key,
         &hello.nonce,
         &hello.remote_nonce,
@@ -368,6 +425,8 @@ pub fn initiator(
         listen_port: remote.listen_port,
         head: remote.head,
         height: remote.height,
+        genesis_timestamp: remote.genesis_timestamp,
+        registration_authority: remote.registration_authority,
         nonce,
         remote_nonce: remote.nonce,
     })
@@ -444,6 +503,8 @@ pub fn responder(
         listen_port: remote.listen_port,
         head: remote.head,
         height: remote.height,
+        genesis_timestamp: remote.genesis_timestamp,
+        registration_authority: remote.registration_authority,
         nonce,
         remote_nonce: remote.nonce,
     })
@@ -453,7 +514,7 @@ pub fn responder(
 pub fn read_message(stream: &mut TcpStream, config: &PeerConfig) -> Result<NetMessage, HandshakeError> {
     let payload = match read_frame(stream, config.max_frame_bytes).map_err(|error| match error {
         FrameError::Timeout => HandshakeError::Timeout,
-        FrameError::TooLarge { .. } => HandshakeError::TooLarge,
+        FrameError::TooLarge { length, limit } => HandshakeError::TooLarge { length, limit },
         other => HandshakeError::Io(other.to_string()),
     })? {
         Some(payload) => payload,

@@ -164,6 +164,10 @@ impl Node {
         self.with_manager(|manager| manager.ban_node(node_key, secs));
     }
 
+    fn is_banned_ip(&self, ip: std::net::IpAddr) -> bool {
+        self.with_manager(|manager| manager.is_banned_ip(ip))
+    }
+
     fn ban_ip(&self, ip: std::net::IpAddr, secs: u64) {
         self.with_manager(|manager| manager.ban_ip(ip, secs));
     }
@@ -602,6 +606,48 @@ fn a_peer_with_a_different_genesis_is_refused() {
     node.stop();
 }
 
+/// Two nodes on the same chain must agree on the registration authority.
+///
+/// The authority is a public parameter of the network — the key that authorises
+/// invitations, and what every node needs to validate the registrations in the
+/// chain's history — so a peer that reports a *different* one is on a chain
+/// this node cannot validate.  A peer that reports none at all is joining and
+/// has not learned it yet: the handshake is how it learns, so that case is
+/// allowed and the node's own record supplies it.
+#[test]
+fn a_peer_that_reports_a_different_registration_authority_is_refused() {
+    let ours = config(1, MAINNET);
+    let known = {
+        let mut config = ours.clone();
+        config.registration_authority = [0xAA; 32];
+        config
+    };
+    let node = Node::start(known.clone());
+    let mut different = config(2, MAINNET);
+    different.registration_authority = [0xBB; 32];
+    let mut client = RawClient::connect(&node, different);
+    match client.hello(Hash32::ZERO, 0) {
+        Err(HandshakeError::Refused { code, detail }) => {
+            assert_eq!(code, RejectCode::WrongChain);
+            assert!(detail.contains("genesis"), "got {:?}", detail);
+        }
+        other => panic!(
+            "a different registration authority must be refused, got {:?}",
+            other.is_ok()
+        ),
+    }
+    node.stop();
+
+    // The same node accepts a peer that has not learned it yet, because that is
+    // exactly the peer the handshake is meant to teach it to.
+    let node = Node::start(known);
+    let joining = config(3, MAINNET);
+    assert_eq!(joining.registration_authority, [0u8; 32]);
+    let mut client = RawClient::connect(&node, joining);
+    assert!(client.hello(Hash32::ZERO, 0).is_ok(), "a joining peer is welcome");
+    node.stop();
+}
+
 #[test]
 fn a_peer_with_an_unsupported_version_is_refused() {
     let node = Node::start(config(1, MAINNET));
@@ -629,6 +675,14 @@ fn a_tampered_handshake_signature_is_refused() {
         Ok(NetMessage::Reject(reject)) => assert_eq!(reject.code, RejectCode::BadSignature),
         other => panic!("a forged key must be refused, got {:?}", other.is_ok()),
     }
+    // *Spoken* protocol plus a broken signature is hostility, and that is what
+    // the address ban is for — unlike a stray HTTP request to the peer port,
+    // which is only a connection to close.
+    assert!(
+        node.wait_until(HANDSHAKE_DEADLINE, |node| node
+            .is_banned_ip(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))),
+        "a forged handshake signature bans the address"
+    );
     node.stop();
 }
 
@@ -730,16 +784,30 @@ fn a_peer_that_never_finishes_the_handshake_is_dropped() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn an_oversized_frame_closes_the_connection() {
+fn an_oversized_frame_closes_the_connection_without_banning_the_address() {
     let node = Node::start(config(1, MAINNET));
     send_junk_and_expect_close(node.addr, &(MAX_FRAME_BYTES as u32 + 1).to_le_bytes());
     node.settle(Duration::from_millis(200));
-    assert_eq!(node.peer_count(), 0);
-    // A peer that breaks framing at the first byte is remembered for a while,
-    // so it cannot keep the node busy trying.
+    assert_eq!(node.peer_count(), 0, "the connection is closed");
+
+    // Closing the connection is the whole response, deliberately.  A frame
+    // header that is not a frame is what an HTTP health probe, a scanner or a
+    // browser tab looks like — not a peer that broke a protocol it was
+    // speaking.  Banning the address for that would ban every co-located peer
+    // on a host that runs more than one node, which is exactly what took a live
+    // devnet's second node offline.  A peer that *speaks* Obsidian and then
+    // breaks it is still banned; see the bad-signature handshake test.
     assert!(
-        node.with_manager(|manager| manager.is_banned_ip("127.0.0.1".parse().unwrap())),
-        "a framing violation bans the address"
+        !node.is_banned_ip(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
+        "a non-Obsidian connection must not ban the address"
+    );
+    // And the node is still perfectly usable afterwards.  The client is held in
+    // a binding on purpose: `let _ =` would drop the socket immediately and the
+    // count would never be observed.
+    let _client = node.connect_registered(config(2, MAINNET));
+    assert!(
+        node.wait_until(HANDSHAKE_DEADLINE, |node| node.peer_count() == 1),
+        "a real peer connects after a stray probe was closed"
     );
     node.stop();
 }
@@ -877,6 +945,42 @@ fn a_banned_identity_cannot_hold_a_connection() {
     assert!(
         node.wait_until(HANDSHAKE_DEADLINE, |node| node.peer_count() == 0),
         "a banned identity holds no connection"
+    );
+    node.stop();
+}
+
+/// A node that meets its own identity is refused — and must not be *banned*.
+///
+/// Seen on a live two-node devnet: the second node was started with the same
+/// keystore, so the two identities matched.  The handshake refused it correctly,
+/// classified it as a protocol violation, and banned the address — which, on one
+/// host, is every co-located peer.  The good connection between the two nodes
+/// was torn down as collateral, and the second node could never join.
+///
+/// A self-connect is a configuration mistake, not an attack, and the ban here is
+/// what turns it into an outage.
+#[test]
+fn a_self_connect_is_refused_without_banning_the_address() {
+    let node = Node::start(config(1, MAINNET));
+    // Dial ourselves: the same identity, a fresh socket.
+    let mut itself = RawClient::connect(&node, config(1, MAINNET));
+    let outcome = itself.authenticate();
+    assert!(
+        outcome.is_err(),
+        "a node must refuse its own identity: {:?}",
+        outcome.err()
+    );
+
+    // No address ban: the loopback address is shared by every node on this host.
+    assert!(
+        !node.is_banned_ip(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
+        "meeting our own identity must not ban every local peer"
+    );
+    // And an ordinary peer still connects afterwards.
+    let _client = node.connect_registered(config(2, MAINNET));
+    assert!(
+        node.wait_until(HANDSHAKE_DEADLINE, |node| node.peer_count() == 1),
+        "a legitimate peer connects after a self-connect was refused"
     );
     node.stop();
 }

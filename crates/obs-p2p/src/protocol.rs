@@ -138,6 +138,24 @@ pub struct Hello {
     pub protocol_version: u32,
     /// Genesis hash the sender's chain descends from.
     pub genesis_hash: Hash32,
+    /// The sender's genesis protocol timestamp.
+    ///
+    /// The genesis anchor commits to this value, so a peer that reports a
+    /// different epoch is on a different chain and the anchor comparison
+    /// refuses it first; the field is carried explicitly so a node can tell an
+    /// operator *why* a peer was refused, and so the node's own record can be
+    /// completed from a peer's.
+    pub genesis_timestamp: u64,
+    /// Public registration authority of the sender's chain, or all-zero bytes
+    /// when the sender has not learned it yet.
+    ///
+    /// This is a *public* network parameter, never a secret: it is the key that
+    /// authorises invitations, and every node needs it to validate the
+    /// registrations in the chain's history.  A node that joins a network it
+    /// did not found learns it here, from a peer whose genesis anchor already
+    /// matched.  A sender that knows the authority never accepts a peer that
+    /// reports a different one.
+    pub registration_authority: [u8; 32],
     /// Sender's node identity public key.
     pub node_key: [u8; 32],
     /// Sender's listening port (0 when the sender does not accept inbound).
@@ -358,16 +376,22 @@ pub fn hello_preimage(
     chain_id: u32,
     protocol_version: u32,
     genesis_hash: &Hash32,
+    genesis_timestamp: u64,
+    registration_authority: &[u8; 32],
     node_key: &[u8; 32],
     nonce: &[u8; 32],
     remote_nonce: &[u8; 32],
 ) -> Vec<u8> {
-    let mut out = Vec::with_capacity(HELLO_DOMAIN.len() + 8 + 96 + 64 + 64);
+    let mut out = Vec::with_capacity(HELLO_DOMAIN.len() + 8 + 128 + 64 + 64);
     out.extend_from_slice(HELLO_DOMAIN);
     out.extend_from_slice(&MAGIC);
     out.extend_from_slice(&chain_id.to_le_bytes());
     out.extend_from_slice(&protocol_version.to_le_bytes());
     out.extend_from_slice(&genesis_hash.0);
+    // The handshake signature covers the genesis parameters too, so a peer
+    // cannot be replayed into a chain with a different epoch or authority.
+    out.extend_from_slice(&genesis_timestamp.to_le_bytes());
+    out.extend_from_slice(registration_authority);
     out.extend_from_slice(node_key);
     out.extend_from_slice(nonce);
     out.extend_from_slice(remote_nonce);
@@ -402,6 +426,8 @@ impl Encode for Hello {
         self.chain_id.encode(out);
         self.protocol_version.encode(out);
         self.genesis_hash.encode(out);
+        self.genesis_timestamp.encode(out);
+        out.extend_from_slice(&self.registration_authority);
         out.extend_from_slice(&self.node_key);
         self.listen_port.encode(out);
         out.extend_from_slice(&self.nonce);
@@ -418,6 +444,8 @@ impl Decode for Hello {
             chain_id: u32::decode(decoder)?,
             protocol_version: u32::decode(decoder)?,
             genesis_hash: Hash32::decode(decoder)?,
+            genesis_timestamp: u64::decode(decoder)?,
+            registration_authority: <[u8; 32]>::decode(decoder)?,
             node_key: <[u8; 32]>::decode(decoder)?,
             listen_port: u16::decode(decoder)?,
             nonce: <[u8; 32]>::decode(decoder)?,
@@ -572,6 +600,8 @@ mod tests {
                 chain_id: MAINNET.chain_id,
                 protocol_version: PROTOCOL_VERSION,
                 genesis_hash: Hash32::from_bytes([1u8; 32]),
+                genesis_timestamp: 1_700_000_000,
+                registration_authority: [12u8; 32],
                 node_key: [2u8; 32],
                 listen_port: 9_200,
                 nonce: [3u8; 32],
@@ -666,32 +696,103 @@ mod tests {
     fn handshake_preimages_are_domain_separated_and_bind_both_nonces() {
         let chain_id = MAINNET.chain_id;
         let genesis = Hash32::from_bytes([1u8; 32]);
+        let timestamp = 1_700_000_000u64;
+        let authority = [5u8; 32];
         let key = [2u8; 32];
         let nonce = [3u8; 32];
         let remote = [4u8; 32];
-
-        let hello = hello_preimage(chain_id, PROTOCOL_VERSION, &genesis, &key, &nonce, &remote);
-        let auth = auth_preimage(chain_id, &genesis, &key, &nonce, &remote);
-        assert_ne!(hello, auth, "the two signatures must not be interchangeable");
-        assert!(hello.starts_with(HELLO_DOMAIN));
-        assert!(auth.starts_with(AUTH_DOMAIN));
-
-        for changed in [
-            hello_preimage(chain_id + 1, PROTOCOL_VERSION, &genesis, &key, &nonce, &remote),
-            hello_preimage(chain_id, PROTOCOL_VERSION + 1, &genesis, &key, &nonce, &remote),
+        let hello = |ts: u64, auth: &[u8; 32]| {
             hello_preimage(
                 chain_id,
                 PROTOCOL_VERSION,
-                &Hash32::from_bytes([9u8; 32]),
+                &genesis,
+                ts,
+                auth,
+                &key,
+                &nonce,
+                &remote,
+            )
+        };
+
+        let baseline = hello(timestamp, &authority);
+        let auth = auth_preimage(chain_id, &genesis, &key, &nonce, &remote);
+        assert_ne!(baseline, auth, "the two signatures must not be interchangeable");
+        assert!(baseline.starts_with(HELLO_DOMAIN));
+        assert!(auth.starts_with(AUTH_DOMAIN));
+
+        for changed in [
+            hello(timestamp + 1, &authority),
+            hello(timestamp, &[9u8; 32]),
+        ] {
+            assert_ne!(
+                changed, baseline,
+                "the genesis parameters must be inside the signature"
+            );
+        }
+
+        for changed in [
+            hello_preimage(
+                chain_id + 1,
+                PROTOCOL_VERSION,
+                &genesis,
+                timestamp,
+                &authority,
                 &key,
                 &nonce,
                 &remote,
             ),
-            hello_preimage(chain_id, PROTOCOL_VERSION, &genesis, &[9u8; 32], &nonce, &remote),
-            hello_preimage(chain_id, PROTOCOL_VERSION, &genesis, &key, &[9u8; 32], &remote),
-            hello_preimage(chain_id, PROTOCOL_VERSION, &genesis, &key, &nonce, &[9u8; 32]),
+            hello_preimage(
+                chain_id,
+                PROTOCOL_VERSION + 1,
+                &genesis,
+                timestamp,
+                &authority,
+                &key,
+                &nonce,
+                &remote,
+            ),
+            hello_preimage(
+                chain_id,
+                PROTOCOL_VERSION,
+                &Hash32::from_bytes([9u8; 32]),
+                timestamp,
+                &authority,
+                &key,
+                &nonce,
+                &remote,
+            ),
+            hello_preimage(
+                chain_id,
+                PROTOCOL_VERSION,
+                &genesis,
+                timestamp,
+                &authority,
+                &[9u8; 32],
+                &nonce,
+                &remote,
+            ),
+            hello_preimage(
+                chain_id,
+                PROTOCOL_VERSION,
+                &genesis,
+                timestamp,
+                &authority,
+                &key,
+                &[9u8; 32],
+                &remote,
+            ),
+            hello_preimage(
+                chain_id,
+                PROTOCOL_VERSION,
+                &genesis,
+                timestamp,
+                &authority,
+                &key,
+                &nonce,
+                &[9u8; 32],
+            ),
         ] {
-            assert_ne!(changed, hello);
+            assert_ne!(changed, baseline);
         }
         assert_ne!(
             auth_preimage(chain_id, &genesis, &key, &nonce, &[9u8; 32]),

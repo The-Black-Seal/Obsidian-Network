@@ -53,6 +53,11 @@ pub struct PeerStatus {
     pub head: Hash32,
     /// Height the peer most recently reported.
     pub height: u64,
+    /// Genesis protocol timestamp the peer reported.
+    pub genesis_timestamp: u64,
+    /// Registration authority the peer reported, or all-zero bytes when the
+    /// peer has not learned its network's genesis yet.
+    pub registration_authority: [u8; 32],
     /// Seconds since the connection was established.
     pub connected_secs: u64,
     /// Seconds since the last message arrived.
@@ -141,6 +146,15 @@ impl PeerManager {
     /// The address the node accepts connections on.
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
+    }
+
+    /// Records the network's registration authority.
+    ///
+    /// A node that joined a network it did not found learns this public
+    /// parameter from a peer's handshake; recording it here makes every
+    /// connection after that refuse a peer that reports a different one.
+    pub fn set_registration_authority(&mut self, authority: [u8; 32]) {
+        self.config.registration_authority = authority;
     }
 
     /// Publishes this node's chain position to new peers.
@@ -313,6 +327,8 @@ impl PeerManager {
                         .map(|stats| stats.height)
                         .filter(|height| *height > 0)
                         .unwrap_or(handle.info.height),
+                    genesis_timestamp: handle.info.genesis_timestamp,
+                    registration_authority: handle.info.registration_authority,
                     connected_secs: now.duration_since(handle.connected_at).as_secs(),
                     idle_secs: stats
                         .and_then(|stats| stats.last_seen)
@@ -512,7 +528,13 @@ impl PeerManager {
                 }
                 if *protocol_violation {
                     // A peer that cannot complete a handshake is not
-                    // necessarily hostile, but it is not useful either.
+                    // necessarily hostile, but it is not useful either, and the
+                    // ban is what stops it from keeping the node busy trying.
+                    // Note what this costs: an address ban takes every peer on
+                    // that address with it, so only genuine violations reach
+                    // here.  A self-connect is deliberately *not* one — an
+                    // ordinary configuration mistake must never ban a host's
+                    // other nodes.
                     self.ip_bans.insert(
                         addr.ip(),
                         Instant::now() + Duration::from_secs(self.config.handshake_ban_secs),

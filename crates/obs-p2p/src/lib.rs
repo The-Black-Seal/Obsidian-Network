@@ -71,6 +71,14 @@ pub struct PeerConfig {
     pub chain_id: u32,
     /// Genesis hash this node requires.
     pub genesis_hash: Hash32,
+    /// Genesis protocol timestamp this node requires.  Zero means "not
+    /// known", which is only possible for a node that has not joined a chain
+    /// yet; every other value is enforced against a peer's handshake.
+    pub genesis_timestamp: u64,
+    /// Registration authority of this node's chain, or all-zero bytes when the
+    /// node has not learned it yet.  A node that knows it refuses a peer that
+    /// reports a different one.
+    pub registration_authority: [u8; 32],
     /// This node's identity key.  Distinct from any wallet key: a validator's
     /// node identity signs consensus traffic and nothing else.
     pub node_key: Keypair,
@@ -120,6 +128,8 @@ impl PeerConfig {
         PeerConfig {
             chain_id: network.chain_id,
             genesis_hash,
+            genesis_timestamp: 0,
+            registration_authority: [0u8; 32],
             node_key,
             listen_port,
             protocol_version: PROTOCOL_VERSION,
@@ -152,6 +162,18 @@ impl PeerConfig {
     /// Overrides the handshake timeout.
     pub fn with_handshake_timeout(mut self, timeout: Duration) -> PeerConfig {
         self.handshake_timeout = timeout;
+        self
+    }
+
+    /// Carries a chain's genesis parameters in the handshake.
+    ///
+    /// The anchor the handshake compares is derived from the network, the
+    /// protocol version and the epoch, so passing the record completes the
+    /// handshake's identity check without adding a secret to it: the
+    /// registration authority is a public parameter of the network.
+    pub fn with_genesis(mut self, genesis: &obs_chain::state::GenesisConfig) -> PeerConfig {
+        self.genesis_timestamp = genesis.timestamp;
+        self.registration_authority = genesis.registration_authority;
         self
     }
 }

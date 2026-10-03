@@ -697,6 +697,72 @@ impl ChainStore {
         genesis_anchor_hash(self.network, &self.genesis)
     }
 
+    /// Completes the genesis record with the network's registration authority.
+    ///
+    /// A node that *joins* a network it did not found starts without the
+    /// authority — it is a public parameter of the network, and the handshake
+    /// is where a peer supplies it — but it cannot validate a registration in
+    /// the chain's history without it.  Adoption is deliberately narrow:
+    ///
+    /// * the store must hold no block but the genesis block, so nothing has
+    ///   been validated under the old (unknown) authority;
+    /// * an authority that is already recorded can never be replaced, so this
+    ///   cannot rewrite a chain's identity;
+    /// * the anchor is unchanged by this, because the anchor commits to the
+    ///   network, the protocol version and the epoch — never to a key.
+    ///
+    /// Returns `true` when the record changed.
+    pub fn adopt_registration_authority(
+        &mut self,
+        authority: [u8; 32],
+    ) -> Result<bool, ChainError> {
+        if authority == self.genesis.registration_authority {
+            return Ok(false);
+        }
+        if self.genesis.registration_authority != [0u8; 32] {
+            return Err(StoreError::GenesisMismatch {
+                stored: format!(
+                    "{} founded for authority {}",
+                    self.network.name,
+                    Hash32(self.genesis.registration_authority).to_hex()
+                ),
+                started: format!(
+                    "{} proposing authority {}",
+                    self.network.name,
+                    Hash32(authority).to_hex()
+                ),
+            }
+            .into());
+        }
+        if self.height() > 0 || self.blocks.len() > 1 {
+            return Err(StoreError::GenesisMismatch {
+                stored: format!(
+                    "{} with {} block(s) already validated",
+                    self.network.name,
+                    self.blocks.len().saturating_sub(1)
+                ),
+                started: format!(
+                    "{} proposing to adopt authority {} after validation",
+                    self.network.name,
+                    Hash32(authority).to_hex()
+                ),
+            }
+            .into());
+        }
+        self.genesis.registration_authority = authority;
+        let genesis_path = self
+            .log_path
+            .parent()
+            .map(|dir| dir.join(crate::store::genesis_file_name(self.network)))
+            .ok_or_else(|| StoreError::Io(std::io::Error::other("the log has no directory")))?;
+        crate::store::write_genesis(&genesis_path, &self.genesis)?;
+        // The genesis state is the only state that exists at this point, and
+        // it is derived from the record that just changed.
+        let anchor = self.genesis_hash();
+        self.states.insert(anchor, self.fresh_state());
+        Ok(true)
+    }
+
     /// Current canonical head hash.
     pub fn head(&self) -> Hash32 {
         self.head

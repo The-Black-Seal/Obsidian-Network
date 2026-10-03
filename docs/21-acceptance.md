@@ -133,8 +133,8 @@ Rust suite: 353 passed, 0 failed. JavaScript suite: 15 passed, 0 failed.
 
 ## What the run found
 
-Ten defects were found by running it, and all ten are fixed — which is the
-point of having it:
+Thirteen defects were found by running it, and all thirteen are fixed — which is
+the point of having it:
 
 1. **The interface did not boot.** The page's shell never painted: the app
    registers its `DOMContentLoaded` handler on `window`, and the test's DOM shim
@@ -280,6 +280,67 @@ point of having it:
    first check and refuses to run the checklist at all if the workspace does not
    build. The graded checks then measure behaviour.
 
+11. **A second node could not sync past the first message's worth of blocks.**
+   `MAX_BLOCKS_PER_MESSAGE` bounds one `Blocks` message to 128 blocks, and the
+   node applied the batch it asked for and then never asked for the next one.
+   On the live devnet this looked like a joiner that had "almost" synced: its
+   status read `height: 128`, `peers: 1`, forever. The receiving side now
+   continues while the batch made progress and the peer has more
+   (`after > before && after < advertised`), and counts each continuation.
+   Regression test: `a_node_that_joins_late_catches_up_across_batches` in
+   `obs-node` builds more than 128 blocks *before* the joiner starts and fails
+   with "at 128 of 151" when the continuation is removed.
+
+12. **A single HTTP probe to the peer port banned the whole address.** The ban
+   rule counted every failed handshake as a protocol violation, including a
+   frame header that promised more bytes than the limit and a connection that
+   closed mid-handshake. A `GET /` from a browser or a health check arrives
+   exactly that way — the header is read as a length of `0x20544547` bytes —
+   and because a ban is keyed on the **address**, two nodes on one host took
+   each other down: node 2 refused the node it was joining with
+   `refused (Banned)`. The rule is now what its comment always claimed: a
+   violation is a peer that *speaks this protocol and then breaks it* (bad
+   signature, nonce mismatch, a message that cannot appear at that stage).
+   Framing mismatches still close the connection, without the ban. Regression
+   tests: `an_oversized_frame_closes_the_connection_without_banning_the_address`
+   and a ban asserted in `a_tampered_handshake_signature_is_refused`.
+
+13. **A joining node could never validate a chain whose founder registered.**
+   Found by pointing a second node at the live devnet and watching it sit at
+   height 0 with nothing but `block_rejected ... orphan: the parent is unknown`
+   events. The cause: block 1 carries the founder's `Register` transaction, the
+   state machine validates it against the network's **registration authority**
+   (`invite_authority`), and a join started with only `--genesis-timestamp` has
+   an all-zero authority — so block 1 was refused, every later block was an
+   orphan, and the node could never make progress. A related version of the
+   same blindness made a node that could not *found* a chain exit instead of
+   syncing, so the join never even started. Three fixes:
+
+   * the genesis record the store writes is completed from the peer's
+     handshake. The authority is a *public* network parameter (it authorises
+     invitations; every node needs it to check history), the handshake already
+     binds both sides to the same genesis anchor, and the extended `Hello`
+     carries the epoch and authority inside its signature;
+   * adoption is narrow and fail-closed. It happens only while the store holds
+     nothing but the genesis block; once an authority is recorded it can never
+     be replaced, and a peer that reports a *different* authority is refused
+     (`WrongChain`) — as is a peer connecting to a node that already knows its
+     own. A fresh joiner records the fact as a `genesis_learned` event;
+   * `--genesis-file <path>` lets an operator supply the network's recorded
+     genesis directly (the `<network>-genesis` file from any of its data
+     directories), and a genesis epoch that has passed is now a warning that
+     the node will sync instead of an exit — fatal only for a node with no
+     peers that was asked to mine.
+
+   Regression test: `a_joiner_learns_the_networks_registration_authority_from_its_peer`
+   in `obs-node` builds a chain whose block 1 is a registration, then joins it
+   with a node whose authority is all-zero and a single peer address; with
+   adoption disabled it fails with "at 0 of 134" after two minutes. The live
+   check is acceptance check 52, which now joins the running devnet with
+   nothing but the epoch, waits for the joiner to reach the height the first
+   node was at, and compares state roots there — and additionally requires the
+   joined chain to contain the registration block.
+
 Three further corrections were to the run itself rather than the system: the
 acceptance script had three checks pointed at the wrong source file or looking
 for the wrong words, and it (like the docs) contained the mainnet genesis
@@ -302,7 +363,7 @@ handshake rule under test (5 s) from the test's patience (120 s). Nothing a test
 asserts was relaxed, and the file went from 130-600 seconds to about four.
 
 Three consecutive full-workspace runs under ten CPU spinners now pass, and the
-suite now stands at 353 tests (the regressions above added eight),
+suite now stands at 357 tests (the regressions above added twelve),
 no failures each time. The rule this produced is in
 [Testing](19-testing.md#tests-must-not-assume-an-idle-machine).
 

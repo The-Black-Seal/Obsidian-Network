@@ -156,6 +156,15 @@ impl NodeApi {
                 ("network", Json::Str(network.name.to_string())),
                 ("chain_id", Json::Int(network.chain_id as i128)),
                 ("protocol_version", Json::Int(obs_chain::params::PROTOCOL_VERSION as i128)),
+                // The chain's epoch is part of its identity — two devnets started
+                // a minute apart are two different chains — so a node publishes
+                // the one it is actually running.  It is public information (it
+                // is the genesis anchor's own input); the registration
+                // authority behind the anchor is not.
+                (
+                    "genesis_timestamp",
+                    Json::Int(node.genesis_timestamp() as i128),
+                ),
                 ("height", Json::Int(node.height() as i128)),
                 ("head", Json::Str(node.head().to_hex())),
                 ("state_root", Json::Str(head.state_root().to_hex())),
@@ -717,6 +726,25 @@ fn describe_event(event: &crate::NodeEvent) -> (String, String) {
             format!(
                 "the chain's genesis epoch is {} but this node's clock is {}; it can sync but cannot found the chain",
                 genesis_timestamp, clock
+            ),
+        ),
+        crate::NodeEvent::GenesisLearned { authority, from } => (
+            "genesis_learned".to_string(),
+            format!(
+                "registration authority {} learned from peer {}",
+                Hash32(*authority).to_hex(),
+                obs_crypto::encoding::hex_encode(from)
+            ),
+        ),
+        crate::NodeEvent::GenesisMismatch {
+            peer_authority,
+            ours,
+        } => (
+            "genesis_mismatch".to_string(),
+            format!(
+                "peer reports registration authority {} but this chain uses {}",
+                Hash32(*peer_authority).to_hex(),
+                Hash32(*ours).to_hex()
             ),
         ),
         crate::NodeEvent::PeerRejected { reason } => (

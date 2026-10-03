@@ -54,6 +54,59 @@ holds a different chain — another network, or another registration authority �
 fails closed and names both. To re-found a chain, use a new data directory
 (`obs-cli devnet init` does this), not a new flag on an old one.
 
+## Joining a network you did not found
+
+A node that joins an existing chain needs three things: the network name, the
+chain's **epoch**, and a peer address. The epoch is in any node's status
+(`GET /api/v1/status` → `genesis_timestamp`); without it a node has its own
+genesis anchor and the handshake refuses every peer as a different chain.
+
+```sh
+./target/release/obs-node --network devnet --data-dir /var/lib/obsidian/join \
+    --api-port 7201 --listen-port 9221 \
+    --genesis-timestamp 1791033668 --peer 127.0.0.1:9220
+```
+
+The chain's **registration authority** is the fourth thing a node needs in
+practice: it is the public key that authorises invitations, and the state
+machine checks it against every `Register` transaction in the chain's history,
+including the founder's — which is normally in block 1. A joining node does not
+have to be told it. The handshake carries the epoch and the authority inside the
+signed `Hello`, both sides already compare the genesis anchor, and a joiner
+whose record has no authority adopts the one its peer reports, before it has
+validated any block. An operator who would rather not take the first peer's word
+can supply the record directly, out of band:
+
+```sh
+./target/release/obs-node --network devnet --data-dir /var/lib/obsidian/join \
+    --genesis-timestamp 1791033668 --peer 127.0.0.1:9220 \
+    --genesis-file /tmp/dev2/node/devnet-genesis
+```
+
+`--genesis-file` reads a `<network>-genesis` record (from any of the network's
+data directories) and refuses anything that is not one, or belongs to another
+network. `--authority-key <64 hex>` states the same thing as a key. Adoption is
+deliberately narrow: it happens only while the data directory holds nothing but
+the genesis block, the recorded authority can never be replaced afterwards, and
+a peer that reports a different authority than the one a node already knows is
+refused at the handshake. A node that learns the network's genesis records a
+`genesis_learned` event naming the peer it learned it from.
+
+## Banning, and what is not a ban
+
+A peer is banned by address for a while when it *speaks the protocol and then
+breaks it*: a handshake signature that does not verify, a nonce that does not
+come back, or a message that cannot appear at that stage of the connection.
+Everything else — a frame header that promises more bytes than the limit, a
+connection that closes mid-handshake, a self-connect — closes the connection
+without banning anyone, because that is also what a health check, a port
+scanner, a browser tab and a peer that is still starting up look like from the
+other side. The distinction matters on a host running several nodes: an address
+ban takes every peer on that address with it, and a stray `GET /` to the peer
+port must not take the deployment down. A peer on another chain, or with a
+different genesis or registration authority, is refused with a reason
+(`WrongChain`) and is not banned either: it is misconfigured, not hostile.
+
 The log is self-checking. Each record carries its own length and CRC32, and a
 torn or partial trailing record found at open is dropped and truncated away
 rather than trusted; a log that contains a block the protocol rejects is an

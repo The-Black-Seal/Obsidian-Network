@@ -31,6 +31,7 @@ use obs_crypto::ed25519::Keypair;
 use obs_wallet::Wallet;
 use obs_node::rpc::NodeApi;
 use obs_node::{Node, NodeConfig, NodeEvent};
+use obs_p2p::protocol::MAX_BLOCKS_PER_MESSAGE;
 use obs_primitives::address::{mask, Address};
 use obs_primitives::identity::canonical_gmail;
 use obs_primitives::json::Json;
@@ -1043,8 +1044,19 @@ fn two_nodes_sync_blocks_over_real_tcp_peers() {
 
     // Walk the miner's protocol time forward four hours: that is 240 blocks and
     // a claim, all of which the follower must receive, validate and apply.
+    //
+    // 240 blocks is also deliberately more than `MAX_BLOCKS_PER_MESSAGE` (128):
+    // a batch is bounded by the protocol, so catching up needs several, and a
+    // node that stops after the first one is stranded exactly one batch into the
+    // chain.  That was a real defect — a second node on a live devnet sat at
+    // height 128 forever — so this test exists to keep the catch-up honest.
     miner.with(|node| advance(node, CLAIM_INTERVAL_SECS + 60));
     let target_height = miner.with(|node| node.height());
+    assert!(
+        target_height > MAX_BLOCKS_PER_MESSAGE as u64,
+        "the test must require more than one sync batch: {} blocks",
+        target_height
+    );
     let target_head = miner.with(|node| node.head());
     let target_state_root = miner.with(|node| node.head_state().state_root());
     assert!(target_height >= 200, "the miner advanced protocol time: {}", target_height);
@@ -1074,6 +1086,135 @@ fn two_nodes_sync_blocks_over_real_tcp_peers() {
         "and it applied the same claims"
     );
     let _ = target_state_root;
+}
+
+/// A node that joins an existing chain must catch up past the first batch.
+///
+/// On a live devnet a second node sat at height 128 forever: it applied the one
+/// batch of blocks it had asked for and never asked for another, so it could
+/// only ever reach `MAX_BLOCKS_PER_MESSAGE` into a chain that was already
+/// hundreds of blocks long.  The other sync test does not catch that — its
+/// follower is connected from the start and follows block by block — so this one
+/// deliberately builds history *before* anyone joins.
+#[test]
+fn a_node_that_joins_late_catches_up_across_batches() {
+    let devnet = Devnet::launch();
+    let founder = Keypair::from_seed(&[64u8; 32]);
+    let miner = Running::start(devnet.node("late-miner", 65, Some(&founder)));
+    let miner_addr = miner.with(|node| node.listen_addr());
+    register_account_in(&miner, &founder, "lateminer");
+
+    // More than one message's worth of history exists before the joiner starts.
+    miner.with(|node| advance(node, 60 * (MAX_BLOCKS_PER_MESSAGE as u64 + 22)));
+    let target_height = miner.with(|node| node.height());
+    let target_head = miner.with(|node| node.head());
+    assert!(
+        target_height > MAX_BLOCKS_PER_MESSAGE as u64,
+        "the chain must be longer than one sync batch: {}",
+        target_height
+    );
+
+    let joiner = Running::start(
+        Node::open(devnet.config("late-joiner", 66).with_peers(vec![miner_addr])).unwrap(),
+    );
+    assert!(
+        wait_until(TEST_DEADLINE, || {
+            joiner.with(|node| node.height() >= target_height)
+        }),
+        "the late joiner caught up past the first batch: at {} of {}",
+        joiner.with(|node| node.height()),
+        target_height
+    );
+    assert_eq!(
+        joiner.with(|node| node.canonical_hash(target_height)),
+        Some(target_head),
+        "and it is on the same chain, block for block"
+    );
+}
+
+/// A node that joins a network it did not found must learn its genesis.
+///
+/// The registration authority is what authorises every registration in the
+/// chain's history, so a joiner that does not have it cannot validate block 1
+/// of a network whose founder registered: on a live devnet the second node sat
+/// at height 0 with nothing but orphan rejections, because its record had an
+/// all-zero authority and every block it was handed descends from a block it
+/// could not accept.  The authority is a *public* parameter of the network, so
+/// the handshake carries it, and this test holds the joiner to nothing but the
+/// chain's epoch and a peer address — exactly what an operator joining a
+/// deployment has.
+#[test]
+fn a_joiner_learns_the_networks_registration_authority_from_its_peer() {
+    let devnet = Devnet::launch();
+    let founder = Keypair::from_seed(&[67u8; 32]);
+    let miner = Running::start(devnet.node("learning-miner", 68, Some(&founder)));
+    let miner_addr = miner.with(|node| node.listen_addr());
+
+    // Block 1 is the founder's registration: it only validates against the
+    // network's registration authority, which is the whole point of the test.
+    register_account_in(&miner, &founder, "learningminer");
+    assert_eq!(miner.with(|node| node.height()), 1);
+    assert!(
+        miner.with(|node| node.block_at(1).expect("block 1 exists").transactions.len()) >= 1,
+        "block 1 must carry the registration, or this test proves nothing"
+    );
+
+    // History longer than one sync batch, so learning the genesis and catching
+    // up across batches are covered together.
+    miner.with(|node| advance(node, 60 * (MAX_BLOCKS_PER_MESSAGE as u64 + 5)));
+    let target_height = miner.with(|node| node.height());
+    let target_head = miner.with(|node| node.head());
+    assert!(target_height > MAX_BLOCKS_PER_MESSAGE as u64);
+
+    let mut config = devnet
+        .config("learning-joiner", 69)
+        .with_peers(vec![miner_addr]);
+    config.genesis.registration_authority = [0u8; 32];
+    let joiner_dir = config.data_dir.clone();
+    let joiner = Running::start(Node::open(config).expect("the joiner opens"));
+    assert_eq!(
+        joiner.with(|node| node.config().genesis.registration_authority),
+        [0u8; 32],
+        "the joiner starts without the authority, as a real one does"
+    );
+
+    assert!(
+        wait_until(TEST_DEADLINE, || {
+            joiner.with(|node| node.height() >= target_height)
+        }),
+        "the joiner caught up after learning the genesis: at {} of {}",
+        joiner.with(|node| node.height()),
+        target_height
+    );
+    assert_eq!(
+        joiner.with(|node| node.canonical_hash(target_height)),
+        Some(target_head),
+        "and it is on the same chain, block for block"
+    );
+    assert_eq!(
+        joiner.with(|node| node.config().genesis.registration_authority),
+        devnet.genesis.registration_authority,
+        "the joiner adopted the network's registration authority"
+    );
+    assert!(
+        joiner.with(|node| node.recent_events(4096).iter().any(|event| matches!(
+            event,
+            NodeEvent::GenesisLearned { authority, .. }
+                if *authority == devnet.genesis.registration_authority
+        ))),
+        "the node records that it learned the genesis from a peer"
+    );
+    // The record on disk is the chain's identity: a restart must not lose what
+    // the handshake taught.
+    let record = obs_consensus::store::read_genesis(
+        joiner_dir.join(obs_consensus::store::genesis_file_name(NETWORK)),
+    )
+    .expect("the record reads back")
+    .expect("the record exists");
+    assert_eq!(
+        record.registration_authority,
+        devnet.genesis.registration_authority
+    );
 }
 
 fn register_account_in(node: &Running, key: &Keypair, name: &str) {

@@ -10,7 +10,10 @@
 | staging | 4 | `sobs1…` | disposable | production rehearsal |
 
 Each network has its own chain id, genesis timestamp, database directory,
-authority key and service key. A transaction signed for one chain id is invalid
+authority key and service key. The genesis parameters are public — a joiner
+learns the registration authority from a peer's signed handshake, or is given
+the network's recorded genesis with `--genesis-file` — while the authority's
+*private* half, which mints invitations, never leaves the registration service. A transaction signed for one chain id is invalid
 on every other network, and a node refuses a block from a different chain
 outright — so a testnet transaction can never be replayed on mainnet.
 
@@ -103,6 +106,8 @@ A minimal production-shaped deployment:
 |-------|---------|-----|
 | node | `--data-dir` | chain state and blocks; one directory per network |
 | node | `--authority-key` | which invitation authorities this chain trusts |
+| node | `--genesis-file` | a recorded `<network>-genesis`, for joining a network this node did not found |
+| node | `--genesis-timestamp` | the network's epoch — `now` when founding, the value from `/api/v1/status` when joining |
 | node | `--keystore` / `OBS_WALLET_PASSWORD` | the key that proposes and claims |
 | node | `--mine`, `--validator` | whether this node proposes and attests |
 | app | `--node-url` | which node it follows |

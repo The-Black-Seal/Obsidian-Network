@@ -44,6 +44,7 @@ const KNOWN: &[&str] = &[
     "api-port",
     "listen-port",
     "genesis-timestamp",
+    "genesis-file",
     "authority-key",
     "node-seed",
     "mine-seed",
@@ -69,6 +70,8 @@ Usage: obs-node [options]
   --listen-port <n>          peer port (default 9220)
   --genesis-timestamp <t>    the network's epoch: unix seconds, or `now` (default: the
                              network's configured epoch — for a new devnet, use `now`)
+  --genesis-file <path>      a network's recorded genesis (`<network>-genesis` from any of
+                             its data directories).  Use this to join an existing chain.
   --authority-key <hex32>    registration authority public key for this network
   --node-seed <hex32>        this node's identity key (default: derived from the data directory)
   --mine-seed <hex32>        mine with this wallet key (development only)
@@ -288,6 +291,34 @@ fn main() -> ExitCode {
     };
 
     let mut config = NodeConfig::new(network, &data_dir, authority, node_key.clone());
+    // A chain's genesis is part of its identity, so a node joining an existing
+    // network needs the network's epoch — not one of its own.  A genesis record
+    // copied from any of that network's data directories carries it, and is the
+    // supported way to join without knowing the deployment's internals.  A data
+    // directory that already holds a chain still wins: the store reads back what
+    // it was founded with.
+    if let Some(path) = args.get("genesis-file") {
+        match obs_consensus::store::read_genesis(path) {
+            Ok(Some(genesis)) => {
+                if genesis.network != network {
+                    eprintln!(
+                        "obs-node: --genesis-file describes {} but this node runs {}",
+                        genesis.network.name, network.name
+                    );
+                    return ExitCode::from(1);
+                }
+                config.genesis = genesis;
+            }
+            Ok(None) => {
+                eprintln!("obs-node: --genesis-file {} does not exist", path);
+                return ExitCode::from(1);
+            }
+            Err(error) => {
+                eprintln!("obs-node: --genesis-file {}: {}", path, error);
+                return ExitCode::from(1);
+            }
+        }
+    }
     config.listen_port = listen_port;
     config.fsync = args.flag("fsync");
     config.peers = peers;
@@ -329,18 +360,37 @@ fn main() -> ExitCode {
         }
     };
 
-    // The genesis-epoch check: a chain cannot produce its first block until its
-    // own clock has reached its epoch, and protocol time itself barely moves
-    // without blocks.  A node whose epoch is in the past can never catch up, so
-    // it is a configuration error worth reporting before the loop starts.
+    // The genesis-epoch check.  A chain cannot produce its first block until its
+    // own clock has reached its epoch, and protocol time barely moves without
+    // blocks, so a node whose epoch is in the past can never *found* the chain.
+    // Being unable to found one is not the same as being unable to join one,
+    // though: a node with peers can still sync, validate and relay, and starts
+    // producing blocks as soon as it has history — whether it was asked to mine
+    // or not.  Only a node that can neither found nor reach anyone to learn from
+    // is a configuration error, and that is the narrow case reported here.
     if let Some(event) = node.genesis_epoch_gap() {
-        eprintln!("obs-node: {}", describe_event(&event));
+        let peers = node.config().peers.clone();
+        let mining = node.config().mine;
+        if peers.is_empty() && mining {
+            eprintln!("obs-node: {}", describe_event(&event));
+            eprintln!(
+                "obs-node: this node is on a chain whose genesis epoch has passed and has no \
+                 peer to join; it can neither found the chain nor sync one.  Found a new \
+                 network with --genesis-timestamp set to now, or join an existing one with \
+                 --peer and the network's --genesis-file."
+            );
+            return ExitCode::from(1);
+        }
         eprintln!(
-            "obs-node: this node is on a chain whose genesis epoch has passed; it cannot \
-             produce a block.  Start the network with --genesis-timestamp set to now (a new \
-             devnet), or join the existing network instead of founding a new one."
+            "obs-node: {}: this node cannot produce this chain's first block, so it will \
+             sync instead{}.",
+            describe_event(&event),
+            if peers.is_empty() {
+                " (no --peer is configured; it is waiting for one)"
+            } else {
+                ""
+            }
         );
-        return ExitCode::from(1);
     }
 
     let api = Arc::new(NodeApi::new(node));

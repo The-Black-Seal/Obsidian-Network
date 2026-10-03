@@ -289,6 +289,27 @@ pub enum NodeEvent {
         /// This node's clock, at the moment it noticed.
         clock: u64,
     },
+    /// The network's genesis parameters were completed from a peer.
+    ///
+    /// A node that joins a network it did not found starts without the
+    /// registration authority — a public parameter of the network — and cannot
+    /// validate the registrations in the chain's history without it.  The
+    /// handshake supplies it, and this event records that it did, because
+    /// "who told this node what its chain is" is exactly the kind of thing an
+    /// operator must be able to see.
+    GenesisLearned {
+        /// Registration authority the network's chain uses.
+        authority: [u8; 32],
+        /// Peer that reported it.
+        from: [u8; 32],
+    },
+    /// A peer is on a chain whose registrations this node cannot validate.
+    GenesisMismatch {
+        /// Registration authority the peer reported.
+        peer_authority: [u8; 32],
+        /// Registration authority this node's chain uses.
+        ours: [u8; 32],
+    },
     /// A validator's attestation was queued for inclusion.
     AttestationQueued {
         /// Attesting node identity.
@@ -313,8 +334,14 @@ pub struct StepOutcome {
     pub transactions_rejected: usize,
     /// Attestations received.
     pub attestations: usize,
+    /// True when this step completed this node's genesis record from a peer.
+    pub genesis_learned: bool,
+    /// Peers refused because they are on a chain this node cannot validate.
+    pub genesis_mismatches: usize,
     /// True when this step produced a block.
     pub mined: bool,
+    /// Sync ranges requested from peers during this step.
+    pub sync_requests: usize,
 }
 
 /// Why a node could not start.
@@ -411,6 +438,7 @@ impl Node {
             config.node_key.clone(),
             config.listen_port,
         )
+        .with_genesis(&config.genesis)
         .with_max_peers(config.max_peers);
         let shutdown = Arc::new(AtomicBool::new(false));
         let peers = PeerManager::bind(peer_config, Arc::clone(&shutdown)).map_err(NodeError::Peer)?;
@@ -628,6 +656,7 @@ impl Node {
             outcome.peer_events += 1;
             self.handle_peer_event(event, &mut outcome);
         }
+        self.learn_network_genesis(&mut outcome);
         if self.config.mine && self.should_propose() {
             if self.propose_internal(&mut outcome).is_some() {
                 outcome.mined = true;
@@ -654,6 +683,61 @@ impl Node {
     // -----------------------------------------------------------------------
     // Peer messages
     // -----------------------------------------------------------------------
+
+    /// Completes this node's genesis record from its peers, and refuses peers
+    /// that are on a chain this node cannot validate.
+    ///
+    /// The registration authority gates every registration in the chain's
+    /// history, so a joining node that does not have it can never validate
+    /// block 1 of a network whose founder registered.  It is a public
+    /// parameter: a peer's handshake carries it, the anchor both sides already
+    /// compare binds the epoch, and a peer that reports a different authority
+    /// once this node knows its own is refused by the handshake.  Adoption is
+    /// refused outright once any block has been validated, so this can never
+    /// rewrite a chain's identity after the fact.
+    fn learn_network_genesis(&mut self, outcome: &mut StepOutcome) {
+        let ours = self.config.genesis.registration_authority;
+        for peer in self.peers.peers() {
+            let theirs = peer.registration_authority;
+            if theirs == [0u8; 32] || theirs == ours {
+                continue;
+            }
+            if ours != [0u8; 32] {
+                // Both known and different: the peer is on another chain's
+                // registrations.  It could not have got past the handshake if
+                // it had connected after this node learned its authority, so
+                // this is the narrow window of a connection that predates it.
+                let _ = self.peers.disconnect(&peer.node_key, 0);
+                self.events.push(NodeEvent::GenesisMismatch {
+                    peer_authority: theirs,
+                    ours,
+                });
+                outcome.genesis_mismatches += 1;
+                continue;
+            }
+            match self.store.adopt_registration_authority(theirs) {
+                Ok(true) => {
+                    self.config.genesis.registration_authority = theirs;
+                    self.peers.set_registration_authority(theirs);
+                    self.events.push(NodeEvent::GenesisLearned {
+                        authority: theirs,
+                        from: peer.node_key,
+                    });
+                    outcome.genesis_learned = true;
+                }
+                Ok(false) => {}
+                Err(_) => {
+                    // This node already validated blocks under its own record,
+                    // so it must not adopt a different chain's authority.
+                    self.events.push(NodeEvent::GenesisMismatch {
+                        peer_authority: theirs,
+                        ours,
+                    });
+                    outcome.genesis_mismatches += 1;
+                }
+            }
+        }
+    }
 
     fn handle_peer_event(&mut self, event: PeerEvent, outcome: &mut StepOutcome) {
         match event {
@@ -697,13 +781,7 @@ impl Node {
         match message {
             NetMessage::Status(status) => self.handle_status(from, status),
             NetMessage::GetBlocks(request) => self.handle_get_blocks(from, request),
-            NetMessage::Blocks(blocks) => {
-                for block in blocks {
-                    // A refused block never stops the batch: a peer may have
-                    // sent a valid block behind an invalid one.
-                    let _ = self.accept_block(Some(from), block, outcome, true);
-                }
-            }
+            NetMessage::Blocks(blocks) => self.handle_blocks(from, blocks, outcome),
             NetMessage::Transactions(transactions) => {
                 for tx in transactions {
                     match self.accept_transaction(tx.clone()) {
@@ -739,6 +817,37 @@ impl Node {
             NetMessage::Bye(_) | NetMessage::Hello(_) | NetMessage::Auth(_) => {
                 // The peer layer decides what to do with these.
             }
+        }
+    }
+
+    /// Applies a batch of blocks from a peer, and keeps syncing while it is
+    /// still ahead.
+    ///
+    /// A batch is bounded by `MAX_BLOCKS_PER_MESSAGE`, so a node joining an
+    /// existing chain needs more than one: it asks for the next range from the
+    /// height it actually reached.  Without that, a fresh node syncs exactly one
+    /// batch and stops — which is not a slow sync, it is a node that never
+    /// reaches the network's chain.  The next request is only sent when the
+    /// batch *advanced* the chain, so a peer that answers with nothing (or with
+    /// blocks we cannot use yet) cannot make this a loop.
+    fn handle_blocks(&mut self, from: [u8; 32], blocks: Vec<Block>, outcome: &mut StepOutcome) {
+        let before = self.store.height();
+        for block in blocks {
+            // A refused block never stops the batch: a peer may have sent a
+            // valid block behind an invalid one.
+            let _ = self.accept_block(Some(from), block, outcome, true);
+        }
+        let after = self.store.height();
+        let advertised = self.syncing.get(&from).copied().unwrap_or(after);
+        if after > before && after < advertised {
+            self.peers.send(
+                &from,
+                NetMessage::GetBlocks(GetBlocks {
+                    from_height: after + 1,
+                    max_blocks: MAX_BLOCKS_PER_MESSAGE as u32,
+                }),
+            );
+            outcome.sync_requests += 1;
         }
     }
 

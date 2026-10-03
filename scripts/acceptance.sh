@@ -20,6 +20,12 @@ cd "$ROOT"
 
 BASE="${OBSIDIAN_BASE_URL:-http://127.0.0.1:8081}"
 NODE="${OBSIDIAN_NODE_URL:-http://127.0.0.1:7200}"
+NODE_PORT="${OBSIDIAN_NODE_PORT:-9220}"
+NODE_API_PORT="${OBSIDIAN_NODE_API_PORT:-7200}"
+NODE_NETWORK="${OBSIDIAN_NETWORK:-devnet}"
+# Exported because checks that need a shell script of their own run in a child
+# bash, and a check must read the same deployment the rest of the run does.
+export BASE NODE NODE_PORT NODE_API_PORT NODE_NETWORK
 
 PASS=0
 FAIL=0
@@ -211,10 +217,54 @@ check 49 "finality needs a two-thirds quorum, computed in integers" \
     bash -c 'grep -q "FINALITY_QUORUM_NUMERATOR: u64 = 2" crates/obs-chain/src/params.rs && grep -q "FINALITY_QUORUM_DENOMINATOR: u64 = 3" crates/obs-chain/src/params.rs'
 check 50 "the validator tests pass" \
     cargo test -p obs-chain --quiet -- validator 2>/dev/null
-check 51 "the live node reports its validator set" \
-    bash -c "curl -sf $NODE/api/v1/validators | grep -q '\"validators\"'"
-check 52 "the live node reports active validators in its status" \
-    bash -c "curl -sf $NODE/api/v1/status | grep -q '\"active_validators\"'"
+check 51 "the live node reports its validator set and active count" \
+    bash -c "curl -sf $NODE/api/v1/validators | grep -q '\"validators\"' && curl -sf $NODE/api/v1/status | grep -q '\"active_validators\"'"
+# A node that cannot *found* a chain is not a node that cannot *join* one.  This
+# starts a second node against the running network with nothing but the chain's
+# epoch (read from the first node's status, so it works for any deployment) and
+# a peer address, waits for it to catch up to the height the first node was at
+# when the check began, and requires the two nodes to agree on the state root at
+# that height — the strongest single statement that the consensus is
+# deterministic and that joining is a matter of connecting, not of
+# reconstructing a deployment.
+#
+# The joiner deliberately gets no `--genesis-file` and no `--authority-key`: its
+# genesis record starts with an all-zero registration authority, and without the
+# authority it could not validate block 1 of any network whose founder
+# registered — which is every real deployment.  A live devnet proved that the
+# hard way: the second node sat at height 0 with nothing but orphan rejections.
+# The authority is a public parameter, so the handshake carries it, and this
+# check requires the joiner to learn it and then reproduce the chain.
+check 52 "a second node joins the running network and reaches the same state" \
+    bash -c '
+        set -e
+        epoch=$(curl -sf $NODE/api/v1/status | sed -n "s/.*\"genesis_timestamp\":\([0-9]*\).*/\1/p")
+        target=$(curl -sf $NODE/api/v1/status | sed -n "s/.*\"height\":\([0-9]*\).*/\1/p")
+        [ -n "$epoch" ] && [ -n "$target" ] || exit 1
+        dir=$(mktemp -d)
+        port=$((NODE_PORT + 1))
+        api=$((NODE_API_PORT + 1))
+        ${OBSIDIAN_NODE_BIN:-./target/release/obs-node} --network "$NODE_NETWORK" --data-dir "$dir" \
+            --api-port "$api" --listen-port "$port" --genesis-timestamp "$epoch" \
+            --peer 127.0.0.1:$NODE_PORT >"$dir/log" 2>&1 &
+        pid=$!
+        clean() { kill "$pid" 2>/dev/null || true; rm -rf "$dir"; }
+        trap clean EXIT
+        reached=0
+        for _ in $(seq 1 120); do
+            have=$(curl -sf http://127.0.0.1:$api/api/v1/status 2>/dev/null | sed -n "s/.*\"height\":\([0-9]*\).*/\1/p" || true)
+            if [ -n "$have" ] && [ "$have" -ge "$target" ]; then reached=1; break; fi
+            sleep 0.5
+        done
+        [ "$reached" = 1 ] || { cat "$dir/log"; exit 1; }
+        theirs=$(curl -sf http://127.0.0.1:$api/api/v1/blocks/$target | sed -n "s/.*\"state_root\":\"\([0-9a-f]*\)\".*/\1/p")
+        ours=$(curl -sf $NODE/api/v1/blocks/$target | sed -n "s/.*\"state_root\":\"\([0-9a-f]*\)\".*/\1/p")
+        [ -n "$theirs" ] && [ "$theirs" = "$ours" ] || { cat "$dir/log"; exit 1; }
+        # The chain it joined has content, and it applied all of it: block 1
+        # carries the founder registration, which is what needed the authority.
+        txs=$(curl -sf http://127.0.0.1:$api/api/v1/blocks/1 | sed -n "s/.*\"transactions\":\([0-9]*\).*/\1/p")
+        [ -n "$txs" ] && [ "$txs" -ge 1 ] || { cat "$dir/log"; exit 1; }
+    '
 
 # ---------------------------------------------------------------------------
 section "Wallet (53-64)"

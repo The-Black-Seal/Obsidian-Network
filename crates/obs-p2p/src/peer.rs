@@ -81,6 +81,11 @@ pub struct PeerInfo {
     pub head: Hash32,
     /// Peer's head height at handshake time.
     pub height: u64,
+    /// Genesis protocol timestamp the peer reported.
+    pub genesis_timestamp: u64,
+    /// Registration authority the peer reported, or all-zero bytes when the
+    /// peer has not learned its network's genesis yet.
+    pub registration_authority: [u8; 32],
 }
 
 /// The handle a node keeps for an established peer.
@@ -206,7 +211,7 @@ pub fn run_connection(
                 HandshakeError::Io(detail) => DisconnectReason::Io(detail.clone()),
                 HandshakeError::Incomplete => DisconnectReason::PeerClosed,
                 HandshakeError::Timeout => DisconnectReason::Timeout,
-                HandshakeError::TooLarge => DisconnectReason::ProtocolViolation(error.to_string()),
+                HandshakeError::TooLarge { .. } => DisconnectReason::ProtocolViolation(error.to_string()),
                 other => DisconnectReason::ProtocolViolation(other.to_string()),
             };
             let _ = events.send(PeerEvent::Rejected {
@@ -227,6 +232,8 @@ pub fn run_connection(
         listen_port: outcome.listen_port,
         head: outcome.head,
         height: outcome.height,
+        genesis_timestamp: outcome.genesis_timestamp,
+        registration_authority: outcome.registration_authority,
     };
 
     // The writer owns a clone; the reader keeps the original.
