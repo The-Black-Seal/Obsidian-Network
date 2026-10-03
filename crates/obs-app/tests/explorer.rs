@@ -263,6 +263,35 @@ impl Harness {
         session.expect("the password and the authenticator together sign in")
     }
 
+    /// The `Host` this harness's service answers on.
+    fn host_header(&self) -> String {
+        format!("127.0.0.1:{}", self.app_port)
+    }
+
+    /// Posts a JSON body with an explicit `Origin`, the way a browser does.
+    fn post_with_origin(&self, path: &str, origin: &str) -> u16 {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        let mut stream = TcpStream::connect(("127.0.0.1", self.app_port)).unwrap();
+        let body = "{\"transaction\":\"00\"}";
+        let request = format!(
+            "POST {} HTTP/1.1\r\nHost: {}\r\nOrigin: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            path,
+            self.host_header(),
+            origin,
+            body.len(),
+            body
+        );
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut answer = String::new();
+        stream.read_to_string(&mut answer).unwrap();
+        answer
+            .split_whitespace()
+            .nth(1)
+            .and_then(|code| code.parse().ok())
+            .unwrap_or(0)
+    }
+
     /// Posts a JSON body with no API key, for the node read-through.
     fn post_plain(&self, path: &str, body: &Json) -> (u16, String) {
         let response: ClientResponse = self
@@ -657,6 +686,35 @@ fn the_page_reads_the_node_through_its_own_origin_and_only_what_it_may() {
         ]),
     );
     assert_eq!(code, 403, "an unsigned proof must not be accepted: {}", body);
+}
+
+#[test]
+fn a_write_from_another_site_is_refused_on_every_path() {
+    let harness = Harness::launch(false);
+
+    // A browser page on another site sends `Origin` with a write.  That must be
+    // refused on the service's own API *and* on the node read-through, because the
+    // read-through forwards a signed transaction — the one write this deployment
+    // accepts from a page.
+    // The same three writes, this time carrying the header — one request each,
+    // built by hand so the `Origin` is exactly what a browser would send.
+    for path in [
+        "/v1/portal/keys",
+        "/node/api/v1/transactions",
+        "/node/api/v1/account/proof",
+    ] {
+        let code = harness.post_with_origin(path, "https://somewhere.example");
+        assert_eq!(code, 403, "{} must refuse a foreign origin", path);
+    }
+
+    // A same-origin write from the service's own page is not blocked by that rule;
+    // the node still validates whatever it is handed.
+    // A browser on this service's own page sends `Origin: http://host:port`, which
+    // matches the `Host` it addressed.  That request is not blocked by the
+    // same-origin rule; the node still validates whatever it is handed.
+    let own_origin = format!("http://{}", harness.host_header());
+    let code = harness.post_with_origin("/node/api/v1/transactions", &own_origin);
+    assert_ne!(code, 403, "the service's own page must be able to submit");
 }
 
 #[test]

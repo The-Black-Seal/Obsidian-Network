@@ -350,8 +350,13 @@ impl Handler for App {
     fn handle(&self, request: &Request, _peer: &Peer) -> Response {
         let now = self.now();
         let state_changing = matches!(request.method, Method::Post | Method::Put | Method::Delete);
+        // Every state-changing request, on any path this service answers — its own
+        // API and the node read-through alike — must come from the service's own
+        // origin.  The read-through forwards a signed transaction, so a browser
+        // page on another site should not be able to make a visitor's browser post
+        // one; a request with no `Origin` at all is not a browser and is allowed
+        // through, which is how the CLI and the acceptance run talk to it.
         if state_changing
-            && request.path.starts_with("/v1/")
             && !request.same_origin(&self.config.allowed_origins)
             && !request.same_origin_as_host()
         {

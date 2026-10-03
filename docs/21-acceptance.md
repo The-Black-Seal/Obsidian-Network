@@ -24,7 +24,7 @@ Deployment under test: devnet (chain id 3), node at height ~1,900, obs-app
 serving the interface, the explorer and the portal on one origin, with the real
 compiled wallet module at `web/wasm/obsidian-wallet.wasm`.
 
-Rust suite: 329 passed, 0 failed. JavaScript suite: 15 passed, 0 failed.
+Rust suite: 330 passed, 0 failed. JavaScript suite: 15 passed, 0 failed.
 
 ## The 100 checks
 
@@ -151,7 +151,14 @@ point of having it:
    now probe-then-drop unconditionally, which is what the liveness test asserts
    and what the code comment always claimed.
 
-Two further corrections were to the run itself rather than the system: the
+4. **The cross-origin guard missed the read-through.** The rule that a
+   state-changing request must come from the service's own origin covered
+   `/v1/*` but not `/node/*`, so a page on another site could make a visitor's
+   browser post to the forwarding routes. The guard now covers every write on
+   every path this service answers, with a test that sends a foreign `Origin` to
+   each of them and asserts a `403`.
+
+Three further corrections were to the run itself rather than the system: the
 acceptance script had three checks pointed at the wrong source file or looking
 for the wrong words, and it (like the docs) contained the mainnet genesis
 invitation as a literal. The invitation is now assembled at run time from

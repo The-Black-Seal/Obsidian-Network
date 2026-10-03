@@ -12,7 +12,7 @@
 | Browser-path | `web/tests/*.test.mjs` | The real interface, booted against a live chain, driving the real wasm wallet |
 | Acceptance | `scripts/acceptance.sh` | 100 numbered checks over the whole system, end to end |
 
-Current counts: **329 Rust tests**, **15 JavaScript tests**, **100 acceptance
+Current counts: **330 Rust tests**, **15 JavaScript tests**, **100 acceptance
 checks**.
 
 ## What the tests specifically refuse to assume
@@ -47,7 +47,7 @@ checks**.
 
 ```sh
 export PATH=/opt/rust/bin:$PATH CARGO_HOME=/opt/cargo CARGO_NET_OFFLINE=true
-cargo test --workspace                                   # 329 tests
+cargo test --workspace                                   # 330 tests
 bash scripts/build-web.sh --check                        # artifact matches source
 node --test web/tests/format.test.mjs \
              web/tests/wallet-module.test.mjs \
