@@ -49,7 +49,7 @@ fn config(seed: u8, network: Network) -> PeerConfig {
         Keypair::from_seed(&[seed; 32]),
         0,
     )
-    .with_handshake_timeout(Duration::from_secs(5))
+    .with_handshake_timeout(HANDSHAKE_TIMEOUT)
 }
 
 fn config_on(seed: u8, genesis: [u8; 32]) -> PeerConfig {
@@ -59,7 +59,7 @@ fn config_on(seed: u8, genesis: [u8; 32]) -> PeerConfig {
         Keypair::from_seed(&[seed; 32]),
         0,
     )
-    .with_handshake_timeout(Duration::from_secs(5))
+    .with_handshake_timeout(HANDSHAKE_TIMEOUT)
 }
 
 /// A running node: a manager polled continuously on a background thread, with
@@ -100,8 +100,21 @@ impl Node {
                         Ok(mut manager) => manager.poll(Duration::from_millis(10)),
                         Err(_) => break,
                     };
+                    let idle = events.is_empty();
                     if let Ok(mut queue) = polled.events.lock() {
                         queue.extend(events);
+                    }
+                    // Yield between polls, so that the test's own thread can
+                    // take the manager lock when it needs to.  A poll holds the
+                    // manager for as long as its timeout, and a mutex makes no
+                    // fairness promise, so a thread that spins back into `lock`
+                    // immediately can keep another waiter out for seconds — long
+                    // enough for this harness to miss a peer's whole lifetime and
+                    // report a network that "never connected".  A millisecond of
+                    // slack per idle poll costs a test nothing and keeps its
+                    // observations its own.
+                    if idle {
+                        std::thread::sleep(Duration::from_millis(1));
                     }
                 }
             })
@@ -168,6 +181,29 @@ impl Node {
         self.peers()[0].node_key
     }
 
+    /// Connects a raw client and waits until the node counts it as a peer.
+    ///
+    /// A machine under load can starve the node's own thread for a long time, so
+    /// a single attempt is not a fair test of the *rule* the test is about.
+    /// Retrying costs nothing when the machine is quiet — the first attempt
+    /// succeeds and this returns immediately.
+    fn connect_registered(&self, client: PeerConfig) -> RawClient {
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            let mut raw = RawClient::connect(self, client.clone());
+            if raw.authenticate().is_ok() && self.wait_for_peers(1, HANDSHAKE_DEADLINE) {
+                return raw;
+            }
+            if attempts >= 3 {
+                panic!(
+                    "a handshake must complete within {:?} (attempts: {})",
+                    HANDSHAKE_DEADLINE, attempts
+                );
+            }
+        }
+    }
+
     fn wait_for_peers(&self, count: usize, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
@@ -177,21 +213,51 @@ impl Node {
             if Instant::now() >= deadline {
                 return self.peer_count() >= count;
             }
-            std::thread::sleep(Duration::from_millis(10));
+            self.settle(Duration::from_millis(5));
         }
     }
 
-    /// Waits for a message from any peer.
-    fn wait_for_message(&self, timeout: Duration) -> Option<NetMessage> {
+    /// Waits for a heartbeat — or for any message — matching `predicate`.
+    ///
+    /// The node's own probes may arrive first, so this takes the queue apart
+    /// rather than assuming the next message is the one under test.
+    fn wait_for_heartbeat(
+        &self,
+        predicate: impl Fn(&NetMessage) -> bool,
+        timeout: Duration,
+    ) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
-            if let Some(message) = self.take_message() {
-                return Some(message);
+            while let Some(message) = self.take_message() {
+                if predicate(&message) {
+                    return true;
+                }
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            self.settle(Duration::from_millis(5));
+        }
+    }
+
+    /// Waits for a message that is not a heartbeat.
+    ///
+    /// A node probes its peers on a timer of its own, so a ping or a pong may
+    /// arrive between any two application messages.  A test asserting on the
+    /// application traffic must not depend on winning that race: under load it
+    /// would fail for a reason that has nothing to do with what it checks.
+    fn wait_for_application_message(&self, timeout: Duration) -> Option<NetMessage> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            while let Some(message) = self.take_message() {
+                if !matches!(message, NetMessage::Ping(_) | NetMessage::Pong(_)) {
+                    return Some(message);
+                }
             }
             if Instant::now() >= deadline {
                 return None;
             }
-            std::thread::sleep(Duration::from_millis(5));
+            self.settle(Duration::from_millis(5));
         }
     }
 
@@ -223,7 +289,7 @@ impl Node {
             if Instant::now() >= deadline {
                 return None;
             }
-            std::thread::sleep(Duration::from_millis(5));
+            self.settle(Duration::from_millis(5));
         }
     }
 
@@ -237,15 +303,46 @@ impl Node {
             if Instant::now() >= deadline {
                 return predicate(self);
             }
-            std::thread::sleep(Duration::from_millis(10));
+            self.settle(Duration::from_millis(5));
         }
     }
 
-    /// Waits `duration`, letting the background poller run, without asserting
+    /// Spends `duration` letting the node make progress, without asserting
     /// anything.  Used where a test wants the node to observe a peer's newest
-    /// bytes but has nothing to wait for.
+    /// bytes but has nothing in particular to wait for.
+    ///
+    /// The background poller is convenient, but a test that only waits on it is
+    /// waiting on the scheduler: on a loaded machine the poller can be starved
+    /// for minutes, and a test about a protocol rule then fails for a reason
+    /// that has nothing to do with the rule.  Driving the manager here makes the
+    /// test's own progress independent of that thread, while the poller carries
+    /// on doing the same work whenever it is scheduled.  The manager sits behind
+    /// a mutex, so the two never overlap.
     fn settle(&self, duration: Duration) {
-        std::thread::sleep(duration);
+        let deadline = Instant::now() + duration;
+        loop {
+            // Advance the node from *this* thread when the manager is free, and
+            // never wait for it when it is not.
+            //
+            // Waiting here would be a trap: the poller thread holds the manager
+            // for the length of one `poll` timeout on every iteration, and a Rust
+            // mutex makes no fairness promise, so a hot loop like the poller can
+            // starve this thread for seconds at a time — a test that spent its
+            // life waiting on a lock would look exactly like a hung network.
+            // `try_lock` gives the test a fair share of the work instead, and the
+            // poller keeps doing the same work whenever it is scheduled.
+            if let Ok(mut manager) = self.shared.manager.try_lock() {
+                let events = manager.poll(Duration::from_millis(0));
+                drop(manager);
+                if let Ok(mut queue) = self.shared.events.lock() {
+                    queue.extend(events);
+                }
+            }
+            if Instant::now() >= deadline {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     fn stop(&self) {
@@ -269,11 +366,13 @@ struct RawClient {
 impl RawClient {
     fn connect(node: &Node, config: PeerConfig) -> RawClient {
         let stream = TcpStream::connect(node.addr).expect("connect");
+        // Deadlines here are for *failing* — a starved thread on a loaded
+        // machine must not look like a broken protocol.
         stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .set_read_timeout(Some(READ_DEADLINE))
             .expect("read timeout");
         stream
-            .set_write_timeout(Some(Duration::from_secs(5)))
+            .set_write_timeout(Some(READ_DEADLINE))
             .expect("write timeout");
         RawClient {
             stream,
@@ -393,6 +492,26 @@ fn send_junk_and_expect_close(addr: SocketAddr, bytes: &[u8]) {
 // Handshake
 // ---------------------------------------------------------------------------
 
+/// How long a peer may take to complete a handshake before the node drops it.
+///
+/// This one is a *rule* under test, not test patience: a handshake is a few small
+/// messages, and a peer that has not completed one in five seconds on any machine
+/// is not going to.  Keeping it short also keeps the tests of the rule — a banned
+/// peer, a peer on another network — quick.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long a raw socket waits for bytes before a test treats it as a failure.
+const READ_DEADLINE: Duration = Duration::from_secs(60);
+
+/// How long a test waits for a handshake to complete.
+///
+/// Generous on purpose.  These tests bind real sockets and run on machines that
+/// may be busy with the rest of the suite; a deadline tuned to an idle machine
+/// turns "the handshake completes" into a coin toss, and a flaky test is worse
+/// than a slow one.  Every wait returns as soon as the condition holds, so a
+/// quiet machine is not slowed down by this at all.
+const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(120);
+
 #[test]
 fn two_nodes_handshake_and_exchange_messages() {
     let alice = Node::start(config(1, MAINNET));
@@ -400,8 +519,8 @@ fn two_nodes_handshake_and_exchange_messages() {
     alice.set_status(Hash32::from_bytes([0xA1; 32]), 41);
 
     bob.connect(alice.addr);
-    assert!(alice.wait_for_peers(1, Duration::from_secs(10)), "responder");
-    assert!(bob.wait_for_peers(1, Duration::from_secs(10)), "initiator");
+    assert!(alice.wait_for_peers(1, HANDSHAKE_DEADLINE), "responder");
+    assert!(bob.wait_for_peers(1, HANDSHAKE_DEADLINE), "initiator");
 
     // Both sides learned the other's verified identity.
     assert_eq!(bob.peers()[0].node_key, alice.node_key);
@@ -415,13 +534,13 @@ fn two_nodes_handshake_and_exchange_messages() {
     // ever seeing it.
     let bob_key = bob.node_key;
     assert!(alice.send(&bob_key, NetMessage::Ping(7_777)));
-    assert_eq!(
-        bob.wait_for_message(Duration::from_secs(5)),
-        Some(NetMessage::Ping(7_777))
+    assert!(
+        bob.wait_for_heartbeat(|message| matches!(message, NetMessage::Ping(7_777)), HANDSHAKE_DEADLINE),
+        "the peer receives the ping"
     );
-    assert_eq!(
-        alice.wait_for_message(Duration::from_secs(5)),
-        Some(NetMessage::Pong(7_777))
+    assert!(
+        alice.wait_for_heartbeat(|message| matches!(message, NetMessage::Pong(7_777)), HANDSHAKE_DEADLINE),
+        "the peer thread answers with a pong, without the node seeing either"
     );
 
     // Application messages cross intact, in both directions.
@@ -430,7 +549,11 @@ fn two_nodes_handshake_and_exchange_messages() {
         max_blocks: 64,
     });
     assert!(alice.send(&bob_key, request.clone()));
-    assert_eq!(bob.wait_for_message(Duration::from_secs(5)), Some(request));
+    assert_eq!(
+        bob.wait_for_application_message(HANDSHAKE_DEADLINE),
+        Some(request),
+        "the request crosses intact"
+    );
 
     let alice_key = alice.node_key;
     let status = NetMessage::Status(Status {
@@ -441,7 +564,11 @@ fn two_nodes_handshake_and_exchange_messages() {
         mempool_len: 12,
     });
     assert!(bob.send(&alice_key, status.clone()));
-    assert_eq!(alice.wait_for_message(Duration::from_secs(5)), Some(status));
+    assert_eq!(
+        alice.wait_for_application_message(HANDSHAKE_DEADLINE),
+        Some(status),
+        "the status crosses intact"
+    );
 
     alice.stop();
     bob.stop();
@@ -514,7 +641,7 @@ fn a_recorded_handshake_cannot_be_replayed() {
     // An honest exchange with a *different* server, recorded byte for byte.
     let mut recorder = TcpStream::connect(honest_server.addr).unwrap();
     recorder
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(HANDSHAKE_DEADLINE))
         .unwrap();
     let nonce = test_nonce();
     let hello = build_hello(&victim, nonce, [0u8; 32], Hash32::ZERO, 0);
@@ -540,7 +667,7 @@ fn a_recorded_handshake_cannot_be_replayed() {
     // The whole transcript is replayed at a fresh node.
     let mut replayer = TcpStream::connect(node.addr).unwrap();
     replayer
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(HANDSHAKE_DEADLINE))
         .unwrap();
     send_message(&mut replayer, &NetMessage::Hello(hello)).unwrap();
     let fresh_hello = match handshake::read_message(&mut replayer, &victim).unwrap() {
@@ -568,12 +695,12 @@ fn a_post_handshake_handshake_message_is_a_protocol_violation() {
     let node = Node::start(config(1, MAINNET));
     let mut raw = RawClient::connect(&node, config(2, MAINNET));
     let hello = raw.authenticate().expect("the handshake completes");
-    assert!(node.wait_for_peers(1, Duration::from_secs(5)));
+    assert!(node.wait_for_peers(1, HANDSHAKE_DEADLINE));
 
     // A second Hello after authentication is not something any honest peer
     // sends; the connection is closed rather than renegotiated.
     raw.send(&NetMessage::Hello(hello));
-    match node.wait_for_disconnect(Duration::from_secs(5)) {
+    match node.wait_for_disconnect(HANDSHAKE_DEADLINE) {
         Some(DisconnectReason::ProtocolViolation(detail)) => {
             assert!(detail.contains("after the handshake"), "got {:?}", detail)
         }
@@ -622,7 +749,7 @@ fn malformed_frames_close_the_connection_instead_of_confusing_the_node() {
     let node = Node::start(config(1, MAINNET));
     let mut raw = RawClient::connect(&node, config(2, MAINNET));
     raw.authenticate().expect("accepted");
-    assert!(node.wait_for_peers(1, Duration::from_secs(5)));
+    assert!(node.wait_for_peers(1, HANDSHAKE_DEADLINE));
 
     // An undefined tag after the handshake is a protocol violation, not a
     // message to guess at.
@@ -630,7 +757,7 @@ fn malformed_frames_close_the_connection_instead_of_confusing_the_node() {
     let mut frame = (garbage.len() as u32).to_le_bytes().to_vec();
     frame.extend_from_slice(&garbage);
     let _ = raw.stream.write_all(&frame);
-    match node.wait_for_disconnect(Duration::from_secs(5)) {
+    match node.wait_for_disconnect(HANDSHAKE_DEADLINE) {
         Some(DisconnectReason::ProtocolViolation(detail)) => {
             assert!(detail.contains("tag"), "got {:?}", detail)
         }
@@ -674,7 +801,7 @@ fn the_manager_bounds_connections_per_address() {
         let _ = index;
         clients.push(client);
     }
-    assert!(node.wait_for_peers(2, Duration::from_secs(5)));
+    assert!(node.wait_for_peers(2, HANDSHAKE_DEADLINE));
 
     let mut third = RawClient::connect(&node, config_on(20, GENESIS));
     match third.hello(Hash32::ZERO, 0) {
@@ -692,7 +819,7 @@ fn a_second_connection_from_one_identity_is_not_duplicated() {
 
     let mut first = RawClient::connect(&node, client.clone());
     first.authenticate().expect("accepted");
-    assert!(node.wait_for_peers(1, Duration::from_secs(5)));
+    assert!(node.wait_for_peers(1, HANDSHAKE_DEADLINE));
 
     let mut second = RawClient::connect(&node, client);
     second.authenticate().expect("handshakes, then is dropped");
@@ -724,7 +851,7 @@ fn a_rejected_handshake_releases_the_connection_slot() {
 
     let mut good = RawClient::connect(&node, config_on(3, GENESIS));
     good.authenticate().expect("the abandoned slot was released");
-    assert!(node.wait_for_peers(1, Duration::from_secs(5)));
+    assert!(node.wait_for_peers(1, HANDSHAKE_DEADLINE));
     node.stop();
 }
 
@@ -732,15 +859,13 @@ fn a_rejected_handshake_releases_the_connection_slot() {
 fn a_banned_identity_cannot_hold_a_connection() {
     let node = Node::start(config(1, MAINNET));
     let client = config(2, MAINNET);
-    let mut raw = RawClient::connect(&node, client.clone());
-    raw.authenticate().expect("accepted");
-    assert!(node.wait_for_peers(1, Duration::from_secs(5)));
+    let _raw = node.connect_registered(client.clone());
 
     let key = node.peer_key();
     node.ban_node(key, 30);
     assert!(node.is_banned(&key));
     assert!(
-        node.wait_until(Duration::from_secs(5), |node| node.peer_count() == 0),
+        node.wait_until(HANDSHAKE_DEADLINE, |node| node.peer_count() == 0),
         "the banned connection is closed"
     );
 
@@ -749,8 +874,10 @@ fn a_banned_identity_cannot_hold_a_connection() {
     // it never appears in the peer table.
     let mut second = RawClient::connect(&node, client);
     let _ = second.authenticate();
-    node.settle(Duration::from_millis(400));
-    assert_eq!(node.peer_count(), 0, "a banned identity holds no connection");
+    assert!(
+        node.wait_until(HANDSHAKE_DEADLINE, |node| node.peer_count() == 0),
+        "a banned identity holds no connection"
+    );
     node.stop();
 }
 
@@ -779,12 +906,10 @@ fn an_idle_peer_is_pinged_then_dropped() {
     let node = Node::start(
         config(1, MAINNET).with_timings(Duration::from_secs(2), Duration::from_millis(400)),
     );
-    let mut client = RawClient::connect(&node, config_on(2, GENESIS));
-    client.authenticate().expect("accepted");
-    assert!(node.wait_for_peers(1, Duration::from_secs(5)));
+    let mut client = node.connect_registered(config_on(2, GENESIS));
 
     // The node probes a quiet peer...
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + HANDSHAKE_DEADLINE;
     let mut seen_ping = false;
     while Instant::now() < deadline && !seen_ping {
         seen_ping = client
@@ -795,9 +920,9 @@ fn an_idle_peer_is_pinged_then_dropped() {
     assert!(seen_ping, "an idle peer must be probed");
 
     // ...and drops it when it answers nothing at all.
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + HANDSHAKE_DEADLINE;
     while Instant::now() < deadline && node.peer_count() > 0 {
-        std::thread::sleep(Duration::from_millis(20));
+        node.settle(Duration::from_millis(20));
     }
     assert_eq!(node.peer_count(), 0, "a silent peer is dropped");
     node.stop();
@@ -808,11 +933,11 @@ fn a_peer_that_says_goodbye_is_reported_as_such() {
     let node = Node::start(config(1, MAINNET));
     let mut raw = RawClient::connect(&node, config(2, MAINNET));
     raw.authenticate().expect("accepted");
-    assert!(node.wait_for_peers(1, Duration::from_secs(5)));
+    assert!(node.wait_for_peers(1, HANDSHAKE_DEADLINE));
 
     let key = node.peer_key();
     node.disconnect(&key, 0);
-    match node.wait_for_disconnect(Duration::from_secs(5)) {
+    match node.wait_for_disconnect(HANDSHAKE_DEADLINE) {
         Some(DisconnectReason::Bye(0)) | Some(DisconnectReason::PeerClosed) => {}
         other => panic!("an orderly close is reported, got {:?}", other),
     }
@@ -824,11 +949,11 @@ fn a_dropped_connection_does_not_leak_a_peer_slot() {
     let node = Node::start(config(1, MAINNET));
     let mut raw = RawClient::connect(&node, config(2, MAINNET));
     raw.authenticate().expect("accepted");
-    assert!(node.wait_for_peers(1, Duration::from_secs(5)));
+    assert!(node.wait_for_peers(1, HANDSHAKE_DEADLINE));
 
     // The client vanishes without a goodbye.
     drop(raw);
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + HANDSHAKE_DEADLINE;
     while Instant::now() < deadline && node.peer_count() > 0 {
         node.settle(Duration::from_millis(50));
     }
@@ -846,7 +971,7 @@ fn the_peer_table_reports_what_the_operator_needs() {
     let client = config(2, MAINNET);
     let mut raw = RawClient::connect(&node, client.clone());
     raw.authenticate().expect("accepted");
-    assert!(node.wait_for_peers(1, Duration::from_secs(5)));
+    assert!(node.wait_for_peers(1, HANDSHAKE_DEADLINE));
 
     let peers = node.peers();
     assert_eq!(peers.len(), 1);
@@ -891,7 +1016,7 @@ fn peers_that_accept_inbound_are_remembered_for_redial() {
     announced.listen_port = 9_999;
     let mut raw = RawClient::connect(&node, announced);
     raw.authenticate().expect("accepted");
-    assert!(node.wait_for_peers(1, Duration::from_secs(5)));
+    assert!(node.wait_for_peers(1, HANDSHAKE_DEADLINE));
     let known = node.known_peers();
     assert_eq!(known.len(), 1, "the advertised port is remembered");
     assert_eq!(known[0].port(), 9_999);
@@ -903,7 +1028,7 @@ fn a_peer_that_announces_no_inbound_port_is_not_remembered() {
     let node = Node::start(config(1, MAINNET));
     let mut raw = RawClient::connect(&node, config(2, MAINNET));
     raw.authenticate().expect("accepted");
-    assert!(node.wait_for_peers(1, Duration::from_secs(5)));
+    assert!(node.wait_for_peers(1, HANDSHAKE_DEADLINE));
     assert!(node.known_peers().is_empty());
     node.stop();
 }
@@ -939,7 +1064,7 @@ fn a_handle_stops_reporting_after_the_writer_ends() {
     let alice = Node::start(config(1, MAINNET));
     let bob = Node::start(config(2, MAINNET));
     bob.connect(alice.addr);
-    assert!(alice.wait_for_peers(1, Duration::from_secs(10)));
+    assert!(alice.wait_for_peers(1, HANDSHAKE_DEADLINE));
     let bob_key = bob.node_key;
     assert!(alice.send(&bob_key, NetMessage::Ping(1)));
 

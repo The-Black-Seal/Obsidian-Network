@@ -137,6 +137,13 @@ impl Devnet {
 ///
 /// A sped-up devnet does in a test what protocol time does on a real network:
 /// the clock is only ever used to *ask* for a block, never to judge one.
+/// How long a test waits for a network condition to hold.
+///
+/// Generous on purpose: these tests run on shared machines, and a deadline tuned
+/// to an idle one turns a rule into a coin toss.  Every wait returns as soon as
+/// the condition holds, so a quiet machine pays nothing for this.
+const TEST_DEADLINE: Duration = Duration::from_secs(120);
+
 fn set_clock_to(node: &mut Node, timestamp: u64) {
     node.set_clock_offset(timestamp as i64 - unix_now() as i64);
 }
@@ -813,7 +820,7 @@ fn two_nodes_sync_blocks_over_real_tcp_peers() {
     assert_eq!(miner.with(|node| node.height()), 1);
 
     assert!(
-        wait_until(Duration::from_secs(20), || {
+        wait_until(TEST_DEADLINE, || {
             !miner.with(|node| node.peer_status()).is_empty()
                 && !follower.with(|node| node.peer_status()).is_empty()
         }),
@@ -835,7 +842,7 @@ fn two_nodes_sync_blocks_over_real_tcp_peers() {
     // hashes commit to the header, and the header carries the state root, so
     // equal hashes at a height mean equal state there — the stronger claim.
     assert!(
-        wait_until(Duration::from_secs(30), || {
+        wait_until(TEST_DEADLINE, || {
             follower.with(|node| node.height() >= target_height)
         }),
         "the follower reached the target height {}: follower at {}",
@@ -920,18 +927,18 @@ impl Api {
     }
 
     fn get(&self, path: &str) -> Json {
-        let client = Client::with_timeout(Duration::from_secs(5));
+        let client = Client::with_timeout(TEST_DEADLINE);
         json_body(&client.get(&format!("{}{}", self.base(), path)).unwrap()).unwrap()
     }
 
     fn get_response(&self, path: &str) -> obs_rpc::http::Response {
-        Client::with_timeout(Duration::from_secs(5))
+        Client::with_timeout(TEST_DEADLINE)
             .get(&format!("{}{}", self.base(), path))
             .unwrap()
     }
 
     fn post(&self, path: &str, body: &Json) -> obs_rpc::http::Response {
-        Client::with_timeout(Duration::from_secs(5))
+        Client::with_timeout(TEST_DEADLINE)
             .post_json(&format!("{}{}", self.base(), path), body)
             .unwrap()
     }

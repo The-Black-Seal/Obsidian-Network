@@ -316,10 +316,11 @@ check 96 "unknown routes are refused" \
     bash -c "curl -s -o /dev/null -w '%{http_code}' $NODE/api/v1/nonesuch | grep -q 404"
 check 97 "a malformed transaction is refused" \
     bash -c "curl -s -X POST $NODE/api/v1/transactions -H 'content-type: application/json' -d '{\"transaction\":\"zz\"}' | grep -qi 'invalid\|malformed\|bad'"
+# Output is kept, not silenced: when a suite fails, the reason is the useful part.
 check 98 "the full Rust suite passes" \
-    cargo test --workspace --quiet 2>/dev/null
+    cargo test --workspace --quiet
 check 99 "the full JavaScript suite passes" \
-    node --test web/tests/format.test.mjs web/tests/wallet-module.test.mjs web/tests/smoke.test.mjs 2>/dev/null
+    node --test web/tests/format.test.mjs web/tests/wallet-module.test.mjs web/tests/smoke.test.mjs
 # The invitation, private keys and the official mark's source are the three
 # things that live outside this repository on purpose.  scripts/leak-check.sh is
 # the scanner that proves it: it knows the first two by name (assembled from
