@@ -82,7 +82,34 @@ The Explorer and the Developer Portal, plus the node read-through.
 | GET | `/node/api/v1/{read-path}` | — | read-through to the node (see below) |
 | POST | `/node/api/v1/transactions` | — | forwards an already-signed transaction |
 | POST | `/node/api/v1/account/proof` | — | forwards an account's signed proof of its own state |
+| GET | `/assets/logo-official.png` | — | the deployment's official mark, from this origin |
 | GET | `/healthz` | — | liveness |
+
+### The official mark
+
+`GET /assets/logo-official.png` returns the project's official logo from the
+service's own origin. The interface and the favicon point at that single path, so
+nothing else in a page has to know where a mark comes from.
+
+A deployment may take the image from either of two places:
+
+* a file, `web/assets/logo-official.<png|svg|webp|jpg>` — installed with
+  `bash scripts/sync-logo.sh <url>` on a machine that can reach the source, and
+  committed; the provenance file next to it records the hash, media type, size and
+  date;
+* a source URL, `obs-app --logo-source <url>` or `OBSIDIAN_LOGO_URL` — which the
+  service fetches **server-side**, caches for an hour and serves to visitors.
+
+The second exists so that an operator can keep the mark's origin private: the URL
+is read from configuration, never written into the repository, and never sent to a
+browser, which always talks to this service's own origin. `LogoSource`'s `Debug`
+implementation prints `LogoSource(<configured by the operator>)`, so no log line,
+error or panic can leak the link by accident.
+
+Only `image/*` answers are accepted (a source that returns an HTML login page is
+refused, not served as a logo), only images up to 2 MiB, and a local file always
+wins over the network. When neither is available the route answers `404` and the
+page uses its drawn seal — a missing logo costs branding, never the page.
 
 ### API keys
 

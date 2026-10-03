@@ -115,3 +115,25 @@ bash scripts/install-toolchain.sh
 
 `scripts/build-web.sh` needs the `wasm32-unknown-unknown` target, which the
 installer provides.
+
+## The official logo does not appear
+
+`GET /assets/logo-official.png` is answering `404`, so the page is showing its
+drawn seal. That is the designed fallback, not a breakage: the interface has a
+mark either way. Check which of the two sources the deployment has:
+
+```sh
+ls -l web/assets/logo-official.*          # an installed file, if any
+obs-app --print-routes | grep logo        # the route is always registered
+```
+
+* **A file wins over a source.** Install one with
+  `bash scripts/sync-logo.sh <url>` on a machine that can reach the source, or
+  drop the image at `web/assets/logo-official.png` yourself.
+* **A configured source that fails backs off for a minute.** The response says
+  why (`no_logo` when nothing is configured or the last attempt failed,
+  `logo_unavailable` while fetching or after a failure); the source URL is
+  deliberately not in the message, and never in a log line.
+* **Only images are accepted.** A source that answers HTML — an error page, a
+  login redirect — is refused with `502`, because serving that as a mark would be
+  worse than showing the drawn seal.

@@ -78,6 +78,11 @@ struct Harness {
 
 impl Harness {
     fn launch(require_key: bool) -> Harness {
+        Harness::launch_with(move |config| config.require_key = require_key)
+    }
+
+    /// Launches the same deployment with anything else the test needs set.
+    fn launch_with(customize: impl FnOnce(&mut AppConfig)) -> Harness {
         let dir = temp_dir("explorer");
         let authority_seed = [17u8; 32];
         let authority_key = Keypair::from_seed(&authority_seed).public_key();
@@ -153,12 +158,12 @@ impl Harness {
         ));
 
         // --- the application service ---------------------------------------
-        let config = AppConfig {
+        let mut config = AppConfig {
             node_url: format!("http://127.0.0.1:{}", node_port),
             network: NETWORK,
-            require_key,
             ..AppConfig::default()
         };
+        customize(&mut config);
         let portal = Portal::open(AtomicStore::open(dir.join("portal.json"), false).unwrap()).unwrap();
         let app = App::new(config, Indexer::new(format!("http://127.0.0.1:{}", node_port), NETWORK), portal)
             .with_accounts(Arc::clone(&registry));
@@ -686,6 +691,99 @@ fn the_page_reads_the_node_through_its_own_origin_and_only_what_it_may() {
         ]),
     );
     assert_eq!(code, 403, "an unsigned proof must not be accepted: {}", body);
+}
+
+/// A stand-in for an operator's logo host: answers one body, counts requests.
+fn stand_in_logo_host(body: Vec<u8>, content_type: &'static str) -> (u16, Arc<AtomicU64>) {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let hits = Arc::new(AtomicU64::new(0));
+    let counter = Arc::clone(&hits);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let mut buffer = [0u8; 4096];
+            let _ = stream.read(&mut buffer);
+            counter.fetch_add(1, Ordering::Relaxed);
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                content_type,
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&body);
+            let _ = stream.flush();
+        }
+    });
+    (port, hits)
+}
+
+const LOGO_BYTES: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x7f, 0x01];
+
+#[test]
+fn the_official_logo_is_fetched_server_side_and_never_hotlinked() {
+    // The deployment is given a source it does not want published.  The service
+    // fetches it once and serves it from its own origin, so the page's markup
+    // never mentions the URL and the browser never contacts that host.
+    let (port, hits) = stand_in_logo_host(LOGO_BYTES.to_vec(), "image/png");
+    let source = format!("http://127.0.0.1:{}/logo.png", port);
+    let harness = Harness::launch_with(move |config| {
+        config.logo_source = Some(obs_app::logo::LogoSource::new(source));
+    });
+
+    let response: ClientResponse = harness
+        .client()
+        .get(&harness.url("/assets/logo-official.png"))
+        .expect("the service answers");
+    assert_eq!(response.status.code(), 200);
+    assert_eq!(response.body, LOGO_BYTES, "the image is served byte for byte");
+    assert_eq!(
+        response
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+            .map(|(_, value)| value.as_str()),
+        Some("image/png")
+    );
+
+    // Served from memory the second time: the logo host is asked once, not once
+    // per visitor.
+    let _ = harness.client().get(&harness.url("/assets/logo-official.png"));
+    assert_eq!(hits.load(Ordering::Relaxed), 1, "the source must be fetched once");
+
+    // And nothing the service says describes the source.
+    let routes = harness.get_raw("/v1/routes").1;
+    assert!(!routes.contains("127.0.0.1"), "no route description may name the source");
+    let printed = format!("{:?}", obs_app::LogoSource::new("https://private.example/logo.png"));
+    assert!(!printed.contains("private.example"), "a source must not be printable");
+}
+
+#[test]
+fn a_logo_source_that_is_not_an_image_degrades_to_the_drawn_mark() {
+    let (port, _hits) = stand_in_logo_host(b"<html>a login page</html>".to_vec(), "text/html");
+    let source = format!("http://127.0.0.1:{}/logo.png", port);
+    let harness = Harness::launch_with(move |config| {
+        config.logo_source = Some(obs_app::logo::LogoSource::new(source));
+    });
+
+    let response: ClientResponse = harness
+        .client()
+        .get(&harness.url("/assets/logo-official.png"))
+        .expect("the service answers");
+    assert_ne!(response.status.code(), 200);
+    assert!(
+        !String::from_utf8_lossy(&response.body).contains("login page"),
+        "a host that answers HTML must not have its answer served as the logo"
+    );
+}
+
+#[test]
+fn without_a_configured_source_the_logo_route_is_absent_and_the_page_falls_back() {
+    let harness = Harness::launch(false);
+    let (code, _) = harness.get_raw("/assets/logo-official.png");
+    assert_eq!(code, 404, "the page has its own fallback and needs no error");
 }
 
 #[test]

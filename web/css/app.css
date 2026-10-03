@@ -87,6 +87,9 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
 .brand { display: flex; align-items: center; gap: .65rem; color: var(--text); }
 .brand:hover { text-decoration: none; }
 .brand img { border-radius: 8px; }
+/* The draw mark is a placeholder that must never stretch: a logo of a different
+   aspect ratio is fitted, not distorted. */
+.brand img.mark { object-fit: contain; }
 .brand-name { font-weight: 620; letter-spacing: .01em; }
 .brand-name em { font-style: normal; color: var(--text-faint); font-weight: 500; margin-left: .3rem; }
 

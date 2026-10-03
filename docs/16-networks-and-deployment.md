@@ -90,6 +90,12 @@ A minimal production-shaped deployment:
   be served from any static host, in which case its node API base is set with
   `<meta name="obsidian-node-api" content="https://node.example.com">` and the
   node must allow the page's origin.
+* The official mark is served at `/assets/logo-official.png` from whichever of
+  these the deployment has (see [APIs](14-apis.md#the-official-mark)):
+  `web/assets/logo-official.*`, installed by `bash scripts/sync-logo.sh <url>`;
+  or a source the app fetches server-side with `--logo-source <url>` /
+  `OBSIDIAN_LOGO_URL`. Either way the page references one relative path, the
+  browser never contacts the mark's origin, and the repository never records it.
 
 ## Configuration that matters
 
@@ -102,4 +108,5 @@ A minimal production-shaped deployment:
 | app | `--node-url` | which node it follows |
 | app | `--require-key` | refuse anonymous readers on the explorer routes |
 | app | `--store`, `--accounts-store` | the portal's keys and the account registry |
+| app | `--logo-source` / `OBSIDIAN_LOGO_URL` | where to fetch the official mark, when it is not a file in `web/assets/` |
 | gateway | `--store`, `--authority-key`, `--service-key` | accounts, invitations, sealed TOTP secrets |

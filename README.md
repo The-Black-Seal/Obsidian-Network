@@ -66,12 +66,13 @@ open http://127.0.0.1:8081            # Mining · Wallet · Explorer · Develope
 ## Verifying it
 
 ```sh
-cargo test --workspace                        # 330 Rust tests
+cargo test --workspace                        # 338 Rust tests
 bash scripts/build-web.sh --check             # the wasm artifact matches the source
 node --test web/tests/format.test.mjs \
              web/tests/wallet-module.test.mjs \
              web/tests/smoke.test.mjs          # 15 JavaScript tests, incl. the browser path
 bash scripts/acceptance.sh                    # 100 checks, end to end
+bash scripts/leak-check.sh                    # nothing that must stay private is in the tree
 ```
 
 The browser test boots the real interface against a live chain, drives the real
@@ -99,8 +100,35 @@ crates/
 web/              the interface: Mining, Wallet, Explorer, Developers
   wasm/           the compiled wallet module and its provenance record
 docs/             the protocol, in 21 documents (start at docs/README.md)
-scripts/          toolchain install, wallet build, and the acceptance run
+scripts/          toolchain install, wallet build, acceptance run, leak check, logo install
 ```
+
+## The official mark
+
+The interface, the favicon and the Explorer's header all show the project's
+official logo, and all of them ask for exactly one path:
+
+```
+/assets/logo-official.png
+```
+
+That path is served by `obs-app` from its own origin. A deployment provides the
+image one of two ways, and neither writes a source URL into this repository:
+
+```sh
+# install the bytes as a file, from a machine that can reach the source
+bash scripts/sync-logo.sh <url>          # → web/assets/logo-official.<ext> + a hash record
+
+# or let the service fetch it, server-side, and keep the URL in configuration
+obs-app --logo-source <url>              # or OBSIDIAN_LOGO_URL
+```
+
+The second exists so an operator can keep the mark's origin to themselves: the
+service fetches the image, caches it, and serves it from its own host, so no
+browser is ever sent to the source and no page, log line, error or panic can
+print the link. When no mark is installed the route answers `404` and the page
+uses the drawn seal that always ships — a missing logo costs branding, never
+the page.
 
 ## Documentation
 

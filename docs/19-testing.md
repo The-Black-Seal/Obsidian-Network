@@ -12,7 +12,7 @@
 | Browser-path | `web/tests/*.test.mjs` | The real interface, booted against a live chain, driving the real wasm wallet |
 | Acceptance | `scripts/acceptance.sh` | 100 numbered checks over the whole system, end to end |
 
-Current counts: **330 Rust tests**, **15 JavaScript tests**, **100 acceptance
+Current counts: **338 Rust tests**, **15 JavaScript tests**, **100 acceptance
 checks**.
 
 ## What the tests specifically refuse to assume
@@ -42,12 +42,15 @@ checks**.
 | Addresses are masked and balances never published | `obs-app` privacy tests |
 | Invalid blocks, roots and signatures are rejected | `obs-consensus`, `obs-node` adversarial tests |
 | The wasm module never returns key material | `web/tests/wallet-module.test.mjs` |
+| The official mark is served from this origin, and its source is unprintable | `obs-app` `logo.rs` unit tests, `tests/explorer.rs` |
+| A logo source that answers HTML is refused rather than served | `obs-app` `logo.rs` unit tests |
+| Nothing that must stay private is in the tree | `scripts/leak-check.sh`, acceptance check 100 |
 
 ## Running everything
 
 ```sh
 export PATH=/opt/rust/bin:$PATH CARGO_HOME=/opt/cargo CARGO_NET_OFFLINE=true
-cargo test --workspace                                   # 330 tests
+cargo test --workspace                                   # 338 tests
 bash scripts/build-web.sh --check                        # artifact matches source
 node --test web/tests/format.test.mjs \
              web/tests/wallet-module.test.mjs \

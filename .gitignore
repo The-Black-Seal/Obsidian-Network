@@ -20,3 +20,6 @@ web/.next/
 *.secret
 .env
 .env.*
+
+# A local, uncommitted note of where the official mark is fetched from.
+.logo-source

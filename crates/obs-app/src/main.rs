@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use obs_app::api::{App, AppConfig};
+use obs_app::logo::LogoSource;
 use obs_app::indexer::Indexer;
 use obs_app::portal::Portal;
 use obs_app::privacy::ROUTES;
@@ -62,6 +63,9 @@ Usage: obs-app [options]
   --port <n>             listen port (default 8081)
   --store <path>         developer-portal store (default ./data/<network>/portal.json)
   --static-dir <path>    serve the web interface from here
+  --logo-source <url>    fetch the official logo from this URL, server-side
+                         (also OBSIDIAN_LOGO_URL; the URL is never sent to a
+                         browser and never appears in a log line)
 
   --require-key          require an API key for explorer reads
   --allowed-origin <o>   extra origin allowed to make state-changing requests (repeatable)
@@ -156,6 +160,15 @@ fn main() -> ExitCode {
         require_key: args.flag("require-key"),
         allowed_origins: args.all("allowed-origin"),
         static_dir: args.get("static-dir").map(|dir| dir.to_string()),
+        // The source may be given as a flag or in the environment.  It is read
+        // here and never printed: the type redacts itself, and the start-up line
+        // below says only *that* a source is configured.
+        logo_source: args
+            .get("logo-source")
+            .map(|url| url.to_string())
+            .or_else(|| std::env::var("OBSIDIAN_LOGO_URL").ok())
+            .filter(|url| !url.trim().is_empty())
+            .map(LogoSource::new),
         ..AppConfig::default()
     };
     if let Some(dir) = &config.static_dir {
@@ -278,6 +291,21 @@ fn main() -> ExitCode {
         }
     );
     println!("obs-app: api keys        {}", if app.config().require_key { "required for reads" } else { "optional for reads" });
+    println!(
+        "obs-app: official logo   {}",
+        match (&app.config().static_dir, &app.config().logo_source) {
+            // A file in the static directory wins, so say so when one is there.
+            (Some(dir), _) if std::path::Path::new(dir)
+                .join("assets")
+                .join("logo-official.png")
+                .is_file() =>
+            {
+                "web/assets/logo-official.png".to_string()
+            }
+            (_, Some(_)) => "from the configured source (never sent to a browser)".to_string(),
+            _ => "none; the interface uses its drawn mark".to_string(),
+        }
+    );
     println!("obs-app: listening       http://0.0.0.0:{}", port);
     println!("obs-app: routes          {} public routes; none returns a balance", ROUTES.len());
 

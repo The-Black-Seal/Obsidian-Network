@@ -301,8 +301,8 @@ check 91 "a revoked key is refused" \
     cargo test -p obs-app --test explorer --quiet 2>/dev/null
 check 92 "an unknown API key is a 404 and a bad one is a 403" \
     grep -q "Status::NOT_FOUND" crates/obs-app/src/api.rs
-check 93 "the interface is served from the application" \
-    bash -c "curl -sf $BASE/ | grep -q 'Obsidian Network'"
+check 93 "the interface is served from the application, with one origin for the official mark" \
+    bash -c "curl -sf $BASE/ | grep -q 'Obsidian Network' && curl -sf $BASE/ | grep -q 'assets/logo-official.png'"
 
 # ---------------------------------------------------------------------------
 section "Authority hierarchy and fail-closed (94-100)"
@@ -320,8 +320,13 @@ check 98 "the full Rust suite passes" \
     cargo test --workspace --quiet 2>/dev/null
 check 99 "the full JavaScript suite passes" \
     node --test web/tests/format.test.mjs web/tests/wallet-module.test.mjs web/tests/smoke.test.mjs 2>/dev/null
-check 100 "no private key, seed phrase or genesis invitation is in the tree" \
-    bash -c '! grep -rnE "$INVITE_NEEDLE|$KEY_NEEDLE" --exclude-dir=.git --exclude-dir=target . | grep -q .'
+# The invitation, private keys and the official mark's source are the three
+# things that live outside this repository on purpose.  scripts/leak-check.sh is
+# the scanner that proves it: it knows the first two by name (assembled from
+# fragments, so the check does not contain what it looks for) and the third by
+# shape, because searching for that host by name would put the host here.
+check 100 "no private key, seed phrase, genesis invitation or logo source is in the tree" \
+    bash scripts/leak-check.sh >/dev/null
 
 # ---------------------------------------------------------------------------
 

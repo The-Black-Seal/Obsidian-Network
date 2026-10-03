@@ -122,14 +122,14 @@ Rust suite: 330 passed, 0 failed. JavaScript suite: 15 passed, 0 failed.
 | 90 | rate limits are clamped into a sane range | pass |
 | 91 | a revoked key is refused | pass |
 | 92 | an unknown API key is a 404 and a bad one is a 403 | pass |
-| 93 | the interface is served from the application | pass |
+| 93 | the interface is served from the application, with one origin for the official mark | pass |
 | 94 | the interface cannot mint: no route writes a balance | pass |
 | 95 | there is no administrative bypass of consensus | pass |
 | 96 | unknown routes are refused | pass |
 | 97 | a malformed transaction is refused | pass |
 | 98 | the full Rust suite passes | pass |
 | 99 | the full JavaScript suite passes | pass |
-| 100 | no private key, seed phrase or genesis invitation is in the tree | pass |
+| 100 | no private key, seed phrase, genesis invitation or logo source is in the tree | pass |
 
 ## What the run found
 

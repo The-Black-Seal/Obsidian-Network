@@ -25,6 +25,7 @@ use obs_rpc::http::{Method, Request, Response, Status};
 use obs_rpc::server::{Handler, Peer};
 
 use crate::indexer::Indexer;
+use crate::logo::{Logo, LogoSource};
 use crate::portal::{Portal, PortalError, RateLimit, Scope};
 use crate::privacy::{node_read_allowed, node_write_allowed, scrub, NODE_READ_PREFIX, ROUTES};
 
@@ -49,6 +50,13 @@ pub struct AppConfig {
     /// web interface.  The API and the interface then share one origin, which is
     /// what makes the session cookie and the API-key header usable at all.
     pub static_dir: Option<String>,
+    /// Where to fetch the official logo from, when the logo is not a file in the
+    /// static directory.
+    ///
+    /// The service fetches it and serves it from its own origin, so the URL never
+    /// reaches a browser and never appears in the repository; see [`crate::logo`].
+    /// Its `Debug` implementation redacts the URL, so no log line can leak it.
+    pub logo_source: Option<LogoSource>,
 }
 
 impl Default for AppConfig {
@@ -61,6 +69,7 @@ impl Default for AppConfig {
             require_key: false,
             allowed_origins: Vec::new(),
             static_dir: None,
+            logo_source: None,
         }
     }
 }
@@ -77,6 +86,8 @@ pub struct App {
     gateway: Option<Arc<obs_gateway::api::Gateway>>,
     /// The web interface's files, when this deployment serves them.
     files: Option<obs_rpc::server::StaticFiles>,
+    /// The official logo, served from this origin rather than hotlinked.
+    logo: Logo,
     config: AppConfig,
     clock: Box<dyn Fn() -> u64 + Send + Sync>,
 }
@@ -95,6 +106,7 @@ impl App {
             accounts: None,
             gateway: None,
             files,
+            logo: Logo::new(config.logo_source.clone()),
             config,
             clock: Box::new(|| {
                 u64::try_from(
@@ -454,6 +466,11 @@ impl Handler for App {
             (Method::Post, ["v1", "portal", "keys", id, "rotate"]) => self.portal_rotate(request, id),
             (Method::Get, ["v1", "portal", "usage"]) => self.portal_usage(request),
             (Method::Get, ["v1", "portal", "openapi.json"]) => publish(openapi(&self.config)),
+            // The deployment's own mark.  Server-side, so a logo host the operator
+            // would rather not publish stays unpublished.
+            (Method::Get, ["assets", "logo-official.png"]) => {
+                self.logo.serve(self.config.static_dir.as_deref())
+            }
             _ => match &self.files {
                 // Anything that is not an API path may be a page or an asset.
                 Some(files) => match files.serve(request) {

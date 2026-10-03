@@ -20,6 +20,7 @@
 
 pub mod api;
 pub mod indexer;
+pub mod logo;
 pub mod portal;
 pub mod privacy;
 
@@ -32,6 +33,7 @@ pub mod privacy;
 pub use obs_gateway::store as store_shim;
 
 pub use api::{App, AppConfig};
+pub use logo::{Logo, LogoSource, LOGO_PATH};
 pub use indexer::{IndexError, Indexer};
 pub use portal::{Portal, PortalError, Scope};
 pub use privacy::{PrivacyViolation, ROUTES};

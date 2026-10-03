@@ -168,6 +168,7 @@ pub const ROUTES: &[Route] = &[
     Route { path: "/node/api/v1/{read-path}", method: "GET", summary: "read-through to a node's public API: status, supply, params, mining, blocks, transactions, validators, mempool, peers, events", scope: None },
     Route { path: "/node/api/v1/transactions", method: "POST", summary: "forwards an already-signed transaction; this service holds no key and cannot alter or forge one", scope: None },
     Route { path: "/node/api/v1/account/proof", method: "POST", summary: "forwards an account's signed proof of ownership so its holder may read that account's own state; a third party cannot use it, and an unknown account is a 404", scope: None },
+    Route { path: "/assets/logo-official.png", method: "GET", summary: "the deployment's official logo, served from this origin; a deployment may fetch it from a private source, which is never sent to a browser", scope: None },
     Route { path: "/healthz", method: "GET", summary: "liveness", scope: None },
 ];
 
