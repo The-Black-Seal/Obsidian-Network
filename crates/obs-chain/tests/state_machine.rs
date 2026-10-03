@@ -10,12 +10,14 @@ use std::collections::BTreeMap;
 
 use obs_chain::block::Attestation;
 use obs_chain::chain::{gmail_commitment, invite_commitment, Claim, ExitReason, InviteAuthorization};
-use obs_chain::params::{ATTESTATION_WINDOW_BLOCKS, 
-    BASE_CLAIM_GRAINS, CLAIM_INTERVAL_SECS, GENESIS_BLOCK_HEIGHT, GENESIS_TIMESTAMP,
+use obs_chain::params::{
+    gas_fee_for, split_gas_fee, ATTESTATION_WINDOW_BLOCKS, BASE_CLAIM_GRAINS,
+    BOOTSTRAP_SLOTS, CLAIM_INTERVAL_SECS, GENESIS_BLOCK_HEIGHT, GENESIS_TIMESTAMP,
     MAX_CLAIMS_PER_DAY, MAX_GAS_FEE, MAX_TXS_PER_BLOCK, PROTOCOL_DAY_SECS, SLOT_DURATION_SECS,
-    UNBONDING_PERIOD_SECS, VALIDATOR_BOND, gas_fee_for, split_gas_fee,
+    UNBONDING_PERIOD_SECS, VALIDATOR_BOND,
 };
 use obs_chain::state::{BlockEffects, ChainState, GenesisConfig, StateError};
+use obs_chain::pot::proposer_for_slot;
 use obs_chain::{Block, Transaction, TxKind};
 use obs_crypto::ed25519::Keypair;
 use obs_primitives::address::Address;
@@ -937,6 +939,119 @@ fn equivocation_is_punished_from_two_signed_attestations() {
     );
     assert_eq!(record.exit_reason, Some(ExitReason::Equivocation));
     assert_eq!(env.active_validators().len(), 0);
+}
+
+#[test]
+fn past_the_bootstrap_window_only_the_scheduled_validator_may_propose() {
+    // The bootstrap rule (any registered account may propose) exists so a new
+    // network can start.  It is time-bounded: once the chain is past
+    // `BOOTSTRAP_SLOTS` and a validator set exists, exactly one key is
+    // authorised per slot, and which key that is comes from the schedule rather
+    // than from whoever is willing to propose.
+    let mut env = Env::new();
+    env.genesis();
+    let owners: Vec<Keypair> = (0..3)
+        .map(|index| Keypair::from_seed(&[90 + index as u8; 32]))
+        .collect();
+    let nodes: Vec<Keypair> = (0..3)
+        .map(|index| Keypair::from_seed(&[95 + index as u8; 32]))
+        .collect();
+    for (index, owner) in owners.iter().enumerate() {
+        env.add_validator(owner, &nodes[index], &format!("SCHED{}", index));
+    }
+    let active = env.active_validators();
+    assert_eq!(active.len(), 3);
+
+    // Walk to the last block of the bootstrap window.  Until then any
+    // registered account may propose, which is how the founder's own key has
+    // been producing blocks all along.
+    let founder = env.proposer.clone();
+    while env.state.height < BOOTSTRAP_SLOTS {
+        let timestamp = env.time + 59;
+        env.commit_at(&founder, timestamp, Vec::new(), Vec::new())
+            .expect("a bootstrap block applies");
+    }
+
+    // The first scheduled slot belongs to exactly one of the three.
+    let timestamp = env.time + 1;
+    let slot = timestamp / SLOT_DURATION_SECS;
+    let index = proposer_for_slot(
+        MAINNET.chain_id,
+        &env.state.last_block_hash,
+        slot,
+        active.len(),
+    )
+    .expect("a slot with validators has a proposer");
+    let scheduled = nodes
+        .iter()
+        .find(|node| node.public_key() == active[index])
+        .expect("the scheduled key is one of ours");
+    let others: Vec<&Keypair> = nodes
+        .iter()
+        .filter(|node| node.public_key() != active[index])
+        .collect();
+
+    // Everyone else is refused, with the rule that caught them.
+    for other in &others {
+        let error = env
+            .commit_at(other, timestamp, Vec::new(), Vec::new())
+            .expect_err("only the scheduled proposer may propose");
+        assert_eq!(error.rule, "block_proposer");
+    }
+
+    // The scheduled validator's block applies, carries the two attestations it
+    // was given, and credits it with the block it proposed.  The third
+    // validator attested nothing, which the chain records as a missed
+    // opportunity rather than as a claim either way.
+    let head = env.state.height;
+    let hash = env.state.last_block_hash;
+    let head_slot = env.state.last_slot;
+    // Every validator was silent for the whole bootstrap window, so what the
+    // block changes is the interesting part.
+    let missed_before: Vec<u64> = nodes
+        .iter()
+        .map(|node| {
+            env.state
+                .validator(&node.public_key())
+                .unwrap()
+                .missed_slots
+        })
+        .collect();
+    let attestations: Vec<Attestation> = [0usize, 1]
+        .iter()
+        .map(|index| Attestation::sign(MAINNET.chain_id, &nodes[*index], head, hash, head_slot))
+        .collect();
+    env.commit_at(scheduled, timestamp, Vec::new(), attestations.clone())
+        .expect("the scheduled proposer's block applies");
+
+    let record = env
+        .state
+        .validator(&scheduled.public_key())
+        .expect("the proposer is a validator")
+        .clone();
+    assert_eq!(record.blocks_proposed, 1, "the chain credits the proposer");
+    for (index, node) in nodes.iter().enumerate() {
+        let missed = env.state.validator(&node.public_key()).unwrap().missed_slots;
+        let attested = attestations
+            .iter()
+            .any(|attestation| attestation.node_key == node.public_key());
+        assert_eq!(
+            missed,
+            missed_before[index] + if attested { 0 } else { 1 },
+            "a block that carries a validator's attestation is not an opportunity it missed, \
+             and one that does not is: validator {} attested: {}",
+            index,
+            attested
+        );
+    }
+
+    // Two of three is a quorum, so the attested height is final.
+    assert!(
+        env.state.finalized_height >= head,
+        "an attested block reaches finality: {} >= {}",
+        env.state.finalized_height,
+        head
+    );
 }
 
 #[test]

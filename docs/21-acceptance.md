@@ -24,7 +24,7 @@ Deployment under test: devnet (chain id 3), node at height ~1,900, obs-app
 serving the interface, the explorer and the portal on one origin, with the real
 compiled wallet module at `web/wasm/obsidian-wallet.wasm`.
 
-Rust suite: 352 passed, 0 failed. JavaScript suite: 15 passed, 0 failed.
+Rust suite: 353 passed, 0 failed. JavaScript suite: 15 passed, 0 failed.
 
 ## The 100 checks
 
@@ -133,7 +133,7 @@ Rust suite: 352 passed, 0 failed. JavaScript suite: 15 passed, 0 failed.
 
 ## What the run found
 
-Eight defects were found by running it, and all eight are fixed — which is the
+Ten defects were found by running it, and all ten are fixed — which is the
 point of having it:
 
 1. **The interface did not boot.** The page's shell never painted: the app
@@ -260,6 +260,26 @@ point of having it:
    again against the same data directory, and the height, head and state root are
    where they were.
 
+9. **Nothing tested the proposer schedule past the bootstrap window.** Fixing
+   the validator accounting exposed it: `missed_slots` and `blocks_proposed` are
+   only meaningful where the scheduled-proposer rule applies, and no test went
+   past `BOOTSTRAP_SLOTS` to reach it. The new
+   `past_the_bootstrap_window_only_the_scheduled_validator_may_propose` walks
+   2,880 blocks to the end of the bootstrap window, then asserts that the two
+   validators the schedule does not select are refused with `block_proposer`,
+   that the scheduled validator's block applies and is credited to it, that the
+   block's attestations spare two validators a missed opportunity and charge the
+   silent third exactly one, and that two of three attestations finalise the
+   height they attest (`ceil(2n/3)`).
+
+10. **The checklist measured the machine as well as the code.** One run failed
+   check 56 (`cargo test -p obs-wallet`), which then passed standalone; the
+   cause was a compile inside a graded check on a sandbox that had just been
+   reset. A check that has to build is partly a test of spare capacity, so the
+   script now warms the build once (`cargo build --workspace --tests`) before the
+   first check and refuses to run the checklist at all if the workspace does not
+   build. The graded checks then measure behaviour.
+
 Three further corrections were to the run itself rather than the system: the
 acceptance script had three checks pointed at the wrong source file or looking
 for the wrong words, and it (like the docs) contained the mainnet genesis
@@ -282,7 +302,7 @@ handshake rule under test (5 s) from the test's patience (120 s). Nothing a test
 asserts was relaxed, and the file went from 130-600 seconds to about four.
 
 Three consecutive full-workspace runs under ten CPU spinners now pass, and the
-suite now stands at 352 tests (the regressions above added seven),
+suite now stands at 353 tests (the regressions above added eight),
 no failures each time. The rule this produced is in
 [Testing](19-testing.md#tests-must-not-assume-an-idle-machine).
 

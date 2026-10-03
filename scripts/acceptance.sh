@@ -25,6 +25,20 @@ PASS=0
 FAIL=0
 FAILED_CHECKS=""
 
+# Warm the build before the first check.  Many checks are `cargo test`
+# invocations, and a check that has to compile is a check that measures the
+# machine's spare capacity as much as the code: on a busy or freshly-reset
+# sandbox the first one can fail on a build hiccup rather than on a defect.
+# The checklist wants to test the software, not the toolchain, so the compiling
+# happens once, here, outside the graded checks.
+if command -v cargo >/dev/null 2>&1; then
+    printf 'warming the build (cargo build --workspace --tests)\n'
+    cargo build --workspace --tests --quiet || {
+        printf 'the workspace does not build; nothing below this line means anything\n'
+        exit 2
+    }
+fi
+
 pass() { PASS=$((PASS + 1)); printf '  %3d. PASS  %s\n' "$1" "$2"; }
 fail() { FAIL=$((FAIL + 1)); FAILED_CHECKS="$FAILED_CHECKS $1"; printf '  %3d. FAIL  %s\n' "$1" "$2"; }
 
