@@ -18,9 +18,14 @@
 //! * **Fail closed on corruption.**  A complete record whose checksum does not
 //!   match is an error: the node refuses to start rather than silently building
 //!   a chain on damaged data.
-//! * **Durability.**  By default every append is flushed to disk
-//!   (`sync_data`) before it is reported as stored, so an acknowledged block
-//!   survives a crash.
+//! * **Durability.**  Every accepted block is written to the log.  With
+//!   `fsync` set, every append is also flushed to the disk (`sync_data`) before
+//!   it is reported as stored, so an acknowledged block survives a crash; set
+//!   or not, it survives the process.
+//! * **One chain per directory.**  The genesis a directory was founded with is
+//!   written beside the log and is authoritative afterwards: restarting a node
+//!   resumes the chain it has, it does not refound it.  Starting a node against
+//!   a directory that holds a different chain is an error, not a silent reset.
 //!
 //! The log is not the source of truth for the *chain*: it is a set of candidate
 //! blocks.  Which of them form the canonical chain is decided by the fork
@@ -30,12 +35,17 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
+use obs_chain::state::GenesisConfig;
 use obs_chain::Block;
 use obs_primitives::codec::Encode;
 use obs_primitives::hash::Hash32;
+use obs_primitives::network::Network;
 
 /// File magic, including a format version.
 pub const LOG_MAGIC: &[u8; 8] = b"OBSBLK1\0";
+
+/// First line of a data directory's genesis record.
+pub const GENESIS_HEADER: &str = "obsidian-genesis 1";
 
 /// Maximum size of a single block record payload (8 MiB, matching the codec).
 pub const MAX_RECORD_LEN: usize = 8 * 1024 * 1024;
@@ -64,6 +74,22 @@ pub enum StoreError {
     },
     /// A stored payload could not be decoded as a block.
     Decode(obs_primitives::codec::CodecError),
+    /// The genesis record in the data directory is malformed.
+    BadGenesis,
+    /// A data directory holds blocks but no record of the chain they belong to,
+    /// so the genesis they descend from cannot be reconstructed.
+    GenesisUnrecorded {
+        /// How many blocks the log holds.
+        blocks: u64,
+    },
+    /// The configuration a node was started with does not describe the chain
+    /// already stored in its data directory.
+    GenesisMismatch {
+        /// What the data directory holds.
+        stored: String,
+        /// What this process was started with.
+        started: String,
+    },
 }
 
 impl core::fmt::Display for StoreError {
@@ -77,6 +103,21 @@ impl core::fmt::Display for StoreError {
             StoreError::RecordTooLarge { len } => {
                 write!(f, "block log record of {} bytes exceeds the limit", len)
             }
+            StoreError::BadGenesis => {
+                write!(f, "this data directory's genesis record is malformed")
+            }
+            StoreError::GenesisUnrecorded { blocks } => write!(
+                f,
+                "this data directory holds {} blocks but no genesis record, so the chain they \
+                 belong to cannot be reconstructed: restore the missing genesis record, or \
+                 start from a new data directory",
+                blocks
+            ),
+            StoreError::GenesisMismatch { stored, started } => write!(
+                f,
+                "this data directory holds the chain {}; this process was started for {}",
+                stored, started
+            ),
             StoreError::Decode(error) => write!(f, "block log record failed to decode: {}", error),
         }
     }
@@ -286,6 +327,90 @@ pub fn head_file_name(network: obs_primitives::network::Network) -> PathBuf {
     PathBuf::from(format!("{}-head", network.name))
 }
 
+/// Convenience: the path of the genesis record for a network.
+pub fn genesis_file_name(network: Network) -> PathBuf {
+    PathBuf::from(format!("{}-genesis", network.name))
+}
+
+/// Reads the genesis record a data directory was founded with, if it has one.
+///
+/// The format is one `key value` per line with a version tag, so an operator can
+/// read it with `cat` and diff two directories without a tool.  Anything not
+/// exactly of this shape is an error: a data directory's genesis is not a hint.
+pub fn read_genesis(path: impl AsRef<Path>) -> Result<Option<GenesisConfig>, StoreError> {
+    let path = path.as_ref();
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(StoreError::Io(error)),
+    };
+    let mut network: Option<Network> = None;
+    let mut chain_id: Option<u64> = None;
+    let mut authority: Option<Hash32> = None;
+    let mut timestamp: Option<u64> = None;
+    let mut lines = text.lines();
+    if lines.next() != Some(GENESIS_HEADER) {
+        return Err(StoreError::BadGenesis);
+    }
+    // The record is machine-written, so a missing final newline is a sign the
+    // file was truncated rather than written: refuse it instead of accepting a
+    // record whose tail may be missing.
+    if !text.ends_with('\n') {
+        return Err(StoreError::BadGenesis);
+    }
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let (key, value) = line.split_once(' ').ok_or(StoreError::BadGenesis)?;
+        match key {
+            "network" => {
+                network = Some(Network::by_name(value).ok_or(StoreError::BadGenesis)?)
+            }
+            "chain_id" => chain_id = Some(value.parse().map_err(|_| StoreError::BadGenesis)?),
+            "authority" => {
+                authority = Some(Hash32::from_hex(value.trim()).ok_or(StoreError::BadGenesis)?)
+            }
+            "timestamp" => timestamp = Some(value.parse().map_err(|_| StoreError::BadGenesis)?),
+            _ => return Err(StoreError::BadGenesis),
+        }
+    }
+    let network = network.ok_or(StoreError::BadGenesis)?;
+    if chain_id != Some(network.chain_id as u64) {
+        return Err(StoreError::BadGenesis);
+    }
+    Ok(Some(GenesisConfig {
+        network,
+        registration_authority: authority.ok_or(StoreError::BadGenesis)?.0,
+        timestamp: timestamp.ok_or(StoreError::BadGenesis)?,
+    }))
+}
+
+/// Writes a genesis record atomically (temporary file, then rename), so a
+/// half-written record can never be read back as a chain's identity.
+pub fn write_genesis(path: impl AsRef<Path>, genesis: &GenesisConfig) -> Result<(), StoreError> {
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let body = format!(
+        "{}\nnetwork {}\nchain_id {}\nauthority {}\ntimestamp {}\n",
+        GENESIS_HEADER,
+        genesis.network.name,
+        genesis.network.chain_id,
+        Hash32(genesis.registration_authority).to_hex(),
+        genesis.timestamp
+    );
+    let temporary = path.with_extension("genesis.tmp");
+    {
+        let mut file = File::create(&temporary)?;
+        file.write_all(body.as_bytes())?;
+        file.sync_data()?;
+    }
+    std::fs::rename(&temporary, path)?;
+    Ok(())
+}
+
 /// Reads a persisted head pointer (best block hash), if present.
 pub fn read_head(path: impl AsRef<Path>) -> Result<Option<Hash32>, StoreError> {
     let path = path.as_ref();
@@ -440,6 +565,78 @@ mod tests {
         match BlockLog::open(&path, false) {
             Err(StoreError::BadMagic) => {}
             other => panic!("expected BadMagic, got ok={}", other.is_ok()),
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_genesis_record_round_trips() {
+        let dir = temp_dir("genesis");
+        let path = dir.join(genesis_file_name(MAINNET));
+        assert_eq!(read_genesis(&path).unwrap(), None, "an empty directory has none");
+        let genesis = GenesisConfig {
+            network: MAINNET,
+            registration_authority: [9u8; 32],
+            timestamp: GENESIS_TIMESTAMP,
+        };
+        write_genesis(&path, &genesis).unwrap();
+        assert_eq!(read_genesis(&path).unwrap(), Some(genesis));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_log_with_blocks_but_no_genesis_record_is_refused() {
+        // The directory cannot be resumed: the anchor is a hash, so the epoch it
+        // was founded with is not recoverable from the blocks, and guessing one
+        // would silently orphan every block in the log.
+        let dir = temp_dir("genesis-unrecorded");
+        let block = genesis_block();
+        {
+            let (mut log, _) = BlockLog::open(dir.join(log_file_name(MAINNET)), false).unwrap();
+            log.append(&block).unwrap();
+        }
+        let reopened = crate::ChainStore::open(
+            &dir,
+            MAINNET,
+            GenesisConfig {
+                network: MAINNET,
+                registration_authority: [1u8; 32],
+                timestamp: GENESIS_TIMESTAMP,
+            },
+            false,
+        );
+        match reopened {
+            Ok(_) => panic!("a chain that cannot be identified must not be resumed"),
+            Err(error) => assert_eq!(
+                error.to_string(),
+                StoreError::GenesisUnrecorded { blocks: 1 }.to_string()
+            ),
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_genesis_record_that_is_not_exactly_right_is_an_error() {
+        let dir = temp_dir("genesis-bad");
+        let path = dir.join("devnet-genesis");
+        let good_authority = "0000000000000000000000000000000000000000000000000000000000000000";
+        for text in [
+            "",
+            "obsidian-genesis 1\n",
+            "obsidian-genesis 2\nnetwork devnet\nchain_id 3\nauthority 00\ntimestamp 1\n",
+            &format!("obsidian-genesis 1\nnetwork devnet\nchain_id 4\nauthority {}\ntimestamp 1\n", good_authority),
+            &format!("obsidian-genesis 1\nnetwork devnet\nchain_id 3\nauthority nothex\ntimestamp 1\n"),
+            &format!("obsidian-genesis 1\nnetwork devnet\nchain_id 3\nauthority {}\ntimestamp soon\n", good_authority),
+            &format!("obsidian-genesis 1\nnetwork devnet\nchain_id 3\nauthority {}\ntimestamp 1\nextra 2\n", good_authority),
+            &format!("obsidian-genesis 1\nnetwork devnet\nchain_id 3\nauthority {}\ntimestamp 1", good_authority),
+        ] {
+            std::fs::write(&path, text).unwrap();
+            assert_eq!(
+                read_genesis(&path).unwrap_err().to_string(),
+                StoreError::BadGenesis.to_string(),
+                "a genesis record that is not exact must not be guessed at: {:?}",
+                text
+            );
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }

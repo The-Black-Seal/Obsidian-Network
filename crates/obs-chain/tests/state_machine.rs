@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use obs_chain::block::Attestation;
 use obs_chain::chain::{gmail_commitment, invite_commitment, Claim, ExitReason, InviteAuthorization};
-use obs_chain::params::{
+use obs_chain::params::{ATTESTATION_WINDOW_BLOCKS, 
     BASE_CLAIM_GRAINS, CLAIM_INTERVAL_SECS, GENESIS_BLOCK_HEIGHT, GENESIS_TIMESTAMP,
     MAX_CLAIMS_PER_DAY, MAX_GAS_FEE, MAX_TXS_PER_BLOCK, PROTOCOL_DAY_SECS, SLOT_DURATION_SECS,
     UNBONDING_PERIOD_SECS, VALIDATOR_BOND, gas_fee_for, split_gas_fee,
@@ -937,6 +937,57 @@ fn equivocation_is_punished_from_two_signed_attestations() {
     );
     assert_eq!(record.exit_reason, Some(ExitReason::Equivocation));
     assert_eq!(env.active_validators().len(), 0);
+}
+
+#[test]
+fn an_attestation_cannot_be_used_long_after_the_block_it_references() {
+    let mut env = Env::new();
+    env.genesis();
+    let owner = Keypair::from_seed(&[77u8; 32]);
+    let node = Keypair::from_seed(&[78u8; 32]);
+    env.add_validator(&owner, &node, "VAL8");
+    let height = env.state.height;
+    let hash = env.state.last_block_hash;
+    let slot = env.state.last_slot;
+    // A perfectly valid signature, made while the block still existed — but the
+    // validator then went silent, so by the time a proposer could include it, it
+    // no longer describes a live validator and must not buy PoT weight.
+    let stale = Attestation::sign(MAINNET.chain_id, &node, height, hash, slot);
+    for _ in 0..ATTESTATION_WINDOW_BLOCKS + 1 {
+        env.commit(vec![], Vec::new()).unwrap();
+    }
+    assert_eq!(env.state.validator(&node.public_key()).unwrap().attestation_count, 0);
+    let error = env.commit(vec![], vec![stale]).unwrap_err();
+    assert_eq!(error.rule, "attestation_stale");
+}
+
+#[test]
+fn the_chain_credits_proposers_and_counts_missed_opportunities() {
+    let mut env = Env::new();
+    env.genesis();
+    let owner = Keypair::from_seed(&[79u8; 32]);
+    let node = Keypair::from_seed(&[80u8; 32]);
+    env.add_validator(&owner, &node, "VAL9");
+    assert_eq!(
+        env.state.validator(&node.public_key()).unwrap().missed_slots,
+        0,
+        "the block that registers a validator is not an opportunity it missed"
+    );
+
+    // One block the validator proposes silently, then one that carries its
+    // attestation for the previous head.
+    env.commit_as(&node, vec![], Vec::new()).unwrap();
+    let height = env.state.height;
+    let hash = env.state.last_block_hash;
+    let slot = env.state.last_slot;
+    let attestation = Attestation::sign(MAINNET.chain_id, &node, height, hash, slot);
+    env.commit_as(&node, vec![], vec![attestation]).unwrap();
+
+    let record = env.state.validator(&node.public_key()).unwrap().clone();
+    assert_eq!(record.blocks_proposed, 2, "both blocks name this node");
+    assert_eq!(record.attestation_count, 1, "one piece of evidence");
+    assert_eq!(record.missed_slots, 1, "one block carried no evidence");
+    assert!(env.state.validator_score(&node.public_key(), env.time).unwrap() > 0);
 }
 
 #[test]

@@ -86,6 +86,7 @@ requires a new protocol version and therefore a new network.
 |----------|-------|
 | `MAX_TXS_PER_BLOCK` | 4,096 |
 | `MAX_ATTESTATIONS_PER_BLOCK` | 1,024 |
+| `ATTESTATION_WINDOW_BLOCKS` | 4 (two minutes of protocol time at the 30-second slot; an attestation older than this cannot be included, so evidence always describes a live validator) |
 | `MAX_PEER_ADDRESSES` | 256 |
 | `MAX_INVITES_PER_ACCOUNT` | 5 |
 

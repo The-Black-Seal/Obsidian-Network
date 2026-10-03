@@ -23,10 +23,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use obs_chain::block::Attestation;
 use obs_chain::params::{CLAIM_INTERVAL_SECS, MAX_CLAIMS_PER_DAY};
 use obs_chain::state::GenesisConfig;
 use obs_chain::{Claim, InviteAuthorization, Transaction, TxKind};
 use obs_crypto::ed25519::Keypair;
+use obs_wallet::Wallet;
 use obs_node::rpc::NodeApi;
 use obs_node::{Node, NodeConfig, NodeEvent};
 use obs_primitives::address::{mask, Address};
@@ -38,6 +40,10 @@ use obs_rpc::client::{json_body, Client};
 use obs_rpc::server::{Handler, Server, ServerConfig};
 
 const NETWORK: Network = DEVNET;
+/// A wallet phrase for tests that need a real derived identity, including the
+/// node key a validator attests with (derived separately from the wallet key,
+/// as the protocol requires).
+const PHRASE: &str = "legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth title";
 /// Seed for the network's registration authority, which in production is the
 /// registration server and never a node.
 const AUTHORITY_SEED: [u8; 32] = [7u8; 32];
@@ -123,11 +129,22 @@ impl Devnet {
     }
 
     fn node(&self, name: &str, seed: u8, mining_key: Option<&Keypair>) -> Node {
-        let config = self.config(name, seed);
-        let config = match mining_key {
-            Some(key) => config.with_mining(key.clone()),
-            None => config,
-        };
+        self.node_with_validator(name, seed, mining_key.unwrap_or(&Keypair::from_seed(&[seed; 32])), &Keypair::from_seed(&[seed.wrapping_add(1); 32]))
+    }
+
+    /// A node that mines with one key and attests with a different one, which is
+    /// what a real validator is: the bond belongs to the wallet, the attestations
+    /// to the node identity.
+    fn node_with_validator(
+        &self,
+        name: &str,
+        seed: u8,
+        mining_key: &Keypair,
+        validator_key: &Keypair,
+    ) -> Node {
+        let config = self.config(name, seed)
+            .with_mining(mining_key.clone())
+            .with_validator(validator_key.clone());
         Node::open(config).expect("the node opens")
     }
 }
@@ -233,6 +250,25 @@ fn claim_tx(key: &Keypair, sequence: u64, nonce: u64, at: u64) -> Transaction {
             sequence,
         }),
         key,
+    )
+}
+
+/// Builds this node's validator registration: 50 OBS bonded to a node identity
+/// key that is distinct from the wallet key.
+fn register_validator_tx(
+    wallet: &Keypair,
+    node_key: &[u8; 32],
+    endpoint: &str,
+    nonce: u64,
+) -> Transaction {
+    Transaction::sign(
+        NETWORK,
+        nonce,
+        TxKind::RegisterValidator {
+            node_key: *node_key,
+            endpoint: endpoint.to_string(),
+        },
+        wallet,
     )
 }
 
@@ -454,6 +490,184 @@ fn the_genesis_block_registers_the_founder_and_mines_the_allocation_once() {
 /// authorisation dated *within the chain's reach*, not ten minutes into its
 /// future.  Dated in chain time it goes in immediately; this test pins both
 /// halves of that: the registration lands, and the genesis allocation is issued.
+/// A registered validator that is running must attest, and its attestations must
+/// reach the chain.
+///
+/// The bond, the node identity and the evidence rules are tested in `obs-chain`;
+/// what this pins is the *node*: it signs an attestation for each new head it
+/// sees, and the next block it proposes carries it, so the chain's uptime record
+/// grows from evidence rather than from anything a node says about itself.
+/// A node that is restarted must come back to the chain it left.
+///
+/// This is what a storage layer is for, and it is the difference between a node
+/// and a cache: every other test in this file would still pass if nothing were
+/// ever written to disk.  A chain that vanishes when its node is restarted is
+/// also a chain whose supply, rewards and finality can be quietly rewound, which
+/// is why durability is not a flag an operator has to remember.
+#[test]
+fn a_node_restarts_on_the_chain_it_left() {
+    let devnet = Devnet::launch();
+    let dir = temp_dir("restart");
+    let mining = Keypair::from_seed(&[41u8; 32]);
+    let mut config = NodeConfig::new(
+        NETWORK,
+        dir,
+        authority().public_key(),
+        Keypair::from_seed(&[42u8; 32]),
+    );
+    config.genesis = devnet.genesis.clone();
+    config.listen_port = free_port();
+    config.fsync = false;
+    config.block_interval = Duration::from_millis(1);
+    let config = config.with_mining(mining.clone());
+
+    let mut node = Node::open(config.clone()).expect("the node opens");
+    register_account(&mut node, &mining, "restart");
+    for _ in 0..3 {
+        assert!(mine_step(&mut node), "blocks are produced");
+    }
+    let height = node.height();
+    let head = node.head_state().last_block_hash;
+    let root = node.head_state().state_root();
+    let issued = node.head_state().issued_supply;
+    assert!(height > 1, "the chain is longer than its genesis");
+    drop(node);
+
+    // The genesis a node was started with is a proposal, not the chain's
+    // identity: the directory keeps the epoch it was founded with, so the
+    // `--genesis-timestamp now` a devnet is started with cannot refound a chain
+    // that already exists.  A restart one minute later therefore resumes it.
+    let mut restarted = config.clone();
+    restarted.genesis.timestamp = config.genesis.timestamp + 60;
+    let mut reopened = Node::open(restarted).expect("the node reopens");
+    assert_eq!(reopened.height(), height, "the chain resumes at the height it reached");
+    assert_eq!(
+        reopened.head_state().last_block_hash,
+        head,
+        "the head is the block the node last accepted"
+    );
+    assert_eq!(
+        reopened.head_state().state_root(),
+        root,
+        "the state root is recomputed from the replayed blocks, not trusted"
+    );
+    assert_eq!(
+        reopened.head_state().issued_supply,
+        issued,
+        "no supply is issued again by replaying history"
+    );
+    assert!(mine_step(&mut reopened), "the restarted node keeps producing blocks");
+    assert!(reopened.height() > height);
+
+    // A directory that holds one chain must not quietly serve another.  Pointing
+    // a node at it with a different registration authority is the mistake this
+    // guards: the node has to refuse, not found a second chain in the same
+    // directory.
+    drop(reopened);
+    let mut wrong = config.clone();
+    wrong.genesis.registration_authority = Keypair::from_seed(&[43u8; 32]).public_key();
+    match Node::open(wrong) {
+        Ok(_) => panic!("a data directory that holds another chain must be refused"),
+        Err(error) => {
+            let message = format!("{}", error);
+            assert!(
+                message.contains("holds the chain"),
+                "the refusal says which chain the directory holds: {}",
+                message
+            );
+        }
+    }
+}
+
+#[test]
+fn a_running_validator_attests_and_its_attestations_reach_the_chain() {
+    let devnet = Devnet::launch();
+    // The founder's wallet, and the node identity derived from it.  The protocol
+    // requires these to be different keys: an identity that doubles as a wallet
+    // would tie attestations to funds.
+    let wallet = Wallet::from_phrase(NETWORK, PHRASE, "", 0).unwrap();
+    let node_key = wallet.public_keys().node_key;
+    let wallet_key = wallet.wallet_keypair().clone();
+    let mut node = devnet.node_with_validator("attesting", 32, &wallet_key, &wallet.node_keypair().clone());
+
+    register_account(&mut node, &wallet_key, "attestor");
+    let nonce = node
+        .head_state()
+        .expected_nonce(&address_of(&wallet_key));
+    next_block_time(&mut node);
+    let registration = register_validator_tx(&wallet_key, &node_key, "127.0.0.1:9220", nonce);
+    node.submit_transaction(registration)
+        .expect("the bond is poolable");
+    assert!(
+        node.mine_once().is_some(),
+        "the registration block applies: {:?}",
+        node.recent_events(8)
+    );
+    assert!(
+        node.head_state().validator(&node_key).is_some(),
+        "the validator is registered"
+    );
+
+    // Every new head is attested by the running node, and the next block carries
+    // the attestation it queued.
+    let mut attested_blocks = 0usize;
+    for _ in 0..6 {
+        if mine_step(&mut node) {
+            if let Some(block) = node.block_at(node.height()) {
+                if !block.attestations.is_empty() {
+                    attested_blocks += 1;
+                }
+            }
+        }
+    }
+
+    // A forged attestation must never enter the queue.  It references a real
+    // block and a plausible height, and the only thing wrong with it is that
+    // nobody signed it — exactly the shape a hostile peer would relay.  If the
+    // node queued it, the next block it proposed would carry it and be invalid
+    // to every node, including this one.
+    let stranger = Keypair::from_seed(&[99u8; 32]);
+    let mut forged = Attestation::sign(
+        NETWORK.chain_id,
+        &stranger,
+        node.height(),
+        node.head_state().last_block_hash,
+        node.head_state().last_slot,
+    );
+    forged.node_key = Keypair::from_seed(&[98u8; 32]).public_key();
+    node.queue_attestation(forged, None);
+    assert!(
+        mine_step(&mut node),
+        "a forged attestation must not poison the node's own next block"
+    );
+
+    let record = node
+        .head_state()
+        .validator(&node_key)
+        .cloned()
+        .expect("the validator is registered");
+    assert!(record.active, "a bonded validator is active");
+    assert!(
+        attested_blocks > 0,
+        "a running validator's attestations must be included in blocks; events: {:?}",
+        node.recent_events(10)
+    );
+    assert!(
+        record.attestation_count > 0,
+        "the chain's uptime evidence must grow: {} attestations",
+        record.attestation_count
+    );
+    assert!(
+        record.last_attested_height > 0,
+        "the chain records the last height this validator attested"
+    );
+    let at = node.head_state().last_timestamp;
+    assert!(
+        node.head_state().uptime_bp(&node_key, at) > 0,
+        "evidence-based uptime must be more than zero once attestations land"
+    );
+}
+
 #[test]
 fn a_founder_registering_long_after_the_epoch_still_founds_the_chain() {
     let devnet = Devnet::launch();

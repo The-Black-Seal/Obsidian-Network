@@ -31,10 +31,40 @@ A healthy node shows: `height` increasing, `protocol_time` moving with it,
 | `issued_supply` | increases by the claim reward per claim | Any other movement is a bug and the block would have been rejected |
 | `active_miners` | rises with participation | Used for the halving position; derived, never reported |
 
+## Durability: what a restart keeps
+
+A node writes every accepted block to `<data-dir>/<network>-blocks.log` as it
+accepts it, and rebuilds its state from that log on start — the log is the chain
+as far as the node itself is concerned. On restart a node therefore returns to
+the head it left, with the same state root recomputed by replaying the same
+blocks through the same rules, and issues nothing again along the way.
+
+`--fsync` chooses **how hard** each write is pushed to disk, not whether the
+block is written: with it, every append calls `sync_data` before the block is
+reported stored; without it the write is handed to the operating system, which
+survives a process crash but not a machine losing power. Run a mainnet node with
+`--fsync`; a devnet that is recreated on every start does not need it.
+
+**A data directory holds one chain.** The genesis it was founded with is
+written beside the log as `<network>-genesis` (one field per line, readable with
+`cat`) and is authoritative from then on: the stored epoch wins over the
+`--genesis-timestamp` a process was started with, so a restart resumes the chain
+it has instead of founding a new one. Starting a node against a directory that
+holds a different chain — another network, or another registration authority —
+fails closed and names both. To re-found a chain, use a new data directory
+(`obs-cli devnet init` does this), not a new flag on an old one.
+
+The log is self-checking. Each record carries its own length and CRC32, and a
+torn or partial trailing record found at open is dropped and truncated away
+rather than trusted; a log that contains a block the protocol rejects is an
+error, not something to skip. The parallel `<network>-head` file is the head
+pointer, written atomically through a rename.
+
 ## Backups
 
-* **Chain state and blocks**: the `--data-dir`. A node can re-sync from peers, so
-  this is a convenience rather than a necessity.
+* **Chain state and blocks**: the `--data-dir`, which holds the block log. A node
+  can re-sync from peers instead, so this is a convenience rather than a
+  necessity — but a node with no peers has only its log.
 * **Authority and service keys**: irreplaceable. A missing authority key stops the
   registration service and prevents minting invitations; losing it means no new
   invitations can be minted for that network.

@@ -245,6 +245,16 @@ pub const MAX_TXS_PER_BLOCK: usize = 4_096;
 /// Maximum number of attestations per block.
 pub const MAX_ATTESTATIONS_PER_BLOCK: usize = 1_024;
 
+/// How far below the block that carries it an attestation may sit.
+///
+/// An attestation is evidence that a validator was live when a specific block
+/// existed.  Bounded this way, the signature cannot be stockpiled: a validator
+/// that went offline cannot have one old attestation harvested later to buy
+/// PoT weight for a block it never saw.  Four blocks is two minutes of protocol
+/// time at the 30-second slot — long enough to survive a slow relay or a
+/// proposer change, short enough that the evidence stays contemporaneous.
+pub const ATTESTATION_WINDOW_BLOCKS: u64 = 4;
+
 /// Maximum number of invitations a single account may issue.
 pub const MAX_INVITES_PER_ACCOUNT: u32 = 5;
 

@@ -788,6 +788,33 @@ impl ChainState {
             self.punish_equivocation(&node_key, header.timestamp, &mut entries);
         }
 
+        // --- Validator accounting ----------------------------------------
+        //
+        // Written from block content only: a validator is credited with the
+        // block when the signed header names it as proposer, and charged one
+        // missed opportunity when the block does not carry its attestation.
+        // Neither number is ever taken from a node's own report.
+        if let Some(record) = self.validators.get_mut(&header.proposer) {
+            if record.is_active() {
+                record.blocks_proposed = record.blocks_proposed.saturating_add(1);
+            }
+        }
+        let carrying: Vec<[u8; 32]> = block
+            .attestations
+            .iter()
+            .map(|attestation| attestation.node_key)
+            .collect();
+        for (node_key, record) in self.validators.iter_mut() {
+            // A validator registered by this very block had no opportunity to
+            // attest anything: its first opportunity is the next block.
+            if record.is_active()
+                && record.registered_at_height < header.height
+                && !carrying.contains(node_key)
+            {
+                record.missed_slots = record.missed_slots.saturating_add(1);
+            }
+        }
+
         // --- Finality -----------------------------------------------------
         self.update_finality(&active_validators);
 
@@ -1579,6 +1606,19 @@ impl ChainState {
             return Err(StateError::new(
                 "attestation_order",
                 "a validator's attestations must follow increasing block heights",
+            ));
+        }
+        if header.height.saturating_sub(attestation.height) > crate::params::ATTESTATION_WINDOW_BLOCKS
+        {
+            return Err(StateError::new(
+                "attestation_stale",
+                format!(
+                    "an attestation for block {} cannot be included in block {}; \
+                     the window is {} blocks",
+                    attestation.height,
+                    header.height,
+                    crate::params::ATTESTATION_WINDOW_BLOCKS
+                ),
             ));
         }
 

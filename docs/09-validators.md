@@ -30,6 +30,35 @@ verified by every node:
 
 A node that claims to be online but does not attest is simply not counted.
 
+### Inclusion rules
+
+An attestation is evidence about a *moment*, so the protocol bounds when it may
+be used. Three rules apply, all deterministic and all checked by the state
+machine when a block is applied:
+
+* an attestation must reference a block **below** the block that carries it —
+  you cannot attest a block that does not exist yet;
+* it must lie inside `ATTESTATION_WINDOW_BLOCKS = 4` of the carrying block (two
+  minutes of protocol time at the 30-second slot), so a signature cannot be
+  stockpiled and spent later by a validator that has since gone offline;
+* a validator's attestations must reference **strictly increasing** heights, and
+  each height may be attested once.
+
+The node's queue follows from the last rule: it holds at most one attestation
+per validator — always the newest — and a block built from that queue is
+applicable by construction. Attestations that a block actually included are
+dropped from the queue; the node's own attestation for the new head is queued as
+the block is accepted, which is what makes the evidence chain continuous. A
+proposer that instead tried to include an older attestation beside a newer one
+from the same validator would produce an invalid block, so the rule is enforced
+where it matters: in the state machine, not in the node's bookkeeping.
+
+A node also verifies every attestation's signature **before** it queues it, even
+though the state machine will verify it again. A queued attestation is one the
+node will put in a block it proposes, so a peer able to push a forged one could
+otherwise make the node build a block every node must reject. What a peer sends
+decides nothing; it only decides what the node is willing to relay.
+
 ## Reward scoring
 
 Each validator's share of the epoch's validator pool uses four components:
@@ -75,7 +104,13 @@ fallback, and it changes no rule, reward, fee or supply parameter.
 
 ## Attestations and finality
 
-Blocks carry up to `MAX_ATTESTATIONS_PER_BLOCK = 1,024` attestations. Finality is
+Blocks carry up to `MAX_ATTESTATIONS_PER_BLOCK = 1,024` attestations, each one
+counted into the block's PoT weight ([05](05-weight-and-fork-choice.md)).
+Validator accounting is written only from block content: the block that names a
+validator as proposer credits it with a proposed block, and a block that does not
+carry a validator's attestation charges it one missed opportunity. Both numbers
+and the uptime ratio above are what the node reports for `/api/v1/validators`,
+which is exactly how the Explorer's validator table is produced. Finality is
 reached when the attested weight past a block satisfies a two-thirds quorum of
 the active validator set — `ceil(2n/3)`, computed with integers. The node reports
 the finalised height, and the Explorer shows the gap between head and finality so

@@ -24,7 +24,7 @@ Deployment under test: devnet (chain id 3), node at height ~1,900, obs-app
 serving the interface, the explorer and the portal on one origin, with the real
 compiled wallet module at `web/wasm/obsidian-wallet.wasm`.
 
-Rust suite: 345 passed, 0 failed. JavaScript suite: 15 passed, 0 failed.
+Rust suite: 352 passed, 0 failed. JavaScript suite: 15 passed, 0 failed.
 
 ## The 100 checks
 
@@ -133,7 +133,7 @@ Rust suite: 345 passed, 0 failed. JavaScript suite: 15 passed, 0 failed.
 
 ## What the run found
 
-Three defects were found by running it, and all three are fixed — which is the
+Eight defects were found by running it, and all eight are fixed — which is the
 point of having it:
 
 1. **The interface did not boot.** The page's shell never painted: the app
@@ -182,6 +182,84 @@ point of having it:
    given (and stepping to the next window when a request lands near a boundary),
    and writes the recovery code, the secret and the URI to a `0600` file.
 
+7. **A validator attested forever and no attestation ever reached a block.**
+   Found by bonding a validator on a running devnet and watching it for a hundred
+   blocks: `/api/v1/events` showed `attestation_queued` beside every `mined`
+   event, while every block carried `attestations: 0` and the validator's record
+   stayed at `attestations: 0, uptime_bp: 0, score: 0`. The chain's uptime rule
+   was never wrong — the *node* was emptying its own queue: after accepting each
+   block it cleared every pending attestation, including the attestation for the
+   new head that accepting the block had just queued. The one attestation that
+   could have been included was discarded by the same step that made it
+   eligible. Two related soundness gaps were found in the same pass:
+
+   * the queue could hold an older and a newer attestation from one validator,
+     and a proposer including both would build a block the state machine rejects
+     (`attestation_order`) — losing every attestation in it. The queue now holds
+     at most one attestation per validator, always the newest, and drops exactly
+     the attestations a block included;
+   * an attestation could reference a block up to 1,024 blocks old, so a
+     validator that had gone offline could have one stale signature harvested
+     later to buy PoT weight. Inclusion is now bounded by
+     `ATTESTATION_WINDOW_BLOCKS = 4`, which the node's own filter mirrors so it
+     never proposes a block the chain must reject.
+
+   A third gap was found next to them: `queue_attestation` accepted whatever a
+   peer relayed without checking the signature. A queued attestation is one the
+   node puts into a block it proposes, so a single forged relay — an attestation
+   for a real height signed by nobody in particular — would have made the node
+   build a block that every node, including itself, must reject. Signatures are
+   now verified before queueing; the node's own `a_running_validator_...` test
+   relays exactly such a forgery and fails if the gate is removed.
+
+   The same pass completed the evidence accounting: `blocks_proposed` and
+   `missed_slots` on a validator record were never written, so the node's
+   `/api/v1/validators` reported zero proposals beside a live validator. Both are
+   now written from block content alone — the signed header names the proposer,
+   and a block that carries no attestation from an active validator is one
+   opportunity it missed (a validator registered by the block itself is not
+   charged for it; its first opportunity is the next block). Regression tests:
+   `a_running_validator_attests_and_its_attestations_reach_the_chain` in
+   `obs-node`, and `an_attestation_cannot_be_used_long_after_the_block_it_references`
+   plus `the_chain_credits_proposers_and_counts_missed_opportunities` in
+   `obs-chain`. On the running devnet the fix is visible end to end: every block
+   carries one attestation, the validator record reads `uptime_bp: 9680`,
+   `score: 98`, `attestations: 91`, and each block's weight includes the attested
+   bonus (`weight_atoms: 1,001,000`).
+
+8. **A restarted node did not come back to its own chain, in two separate
+   ways.** Found by restarting the devnet node between acceptance runs:
+   `/api/v1/status` came back at height 0 with `block_rejected`/`block_proposer`
+   events, and the run failed checks 29, 40 and 44 — exactly the ones that need a
+   chain with history.
+
+   * **Durability was opt-in.** `ChainStore` appends a block to the log only
+     when `fsync` is on, and `obs-node` set `fsync` from the `--fsync` flag, so
+     without the flag nothing was written at all — the flag's own help text
+     ("flush every write to disk") described something stronger than what it
+     gated. A chain's supply, rewards and finality could be rewound by
+     restarting a process. Every accepted block is now written to the log;
+     `--fsync` decides how hard each write is pushed to the platter, never
+     whether it happens.
+   * **A directory did not remember which chain it held.** Even with the blocks
+     written, a devnet restarted with `--genesis-timestamp now` got a *different*
+     genesis anchor, so the replayed log was a pile of orphans and the node
+     started fresh at height 0. A data directory now records the genesis it was
+     founded with (`<network>-genesis`) and that record is authoritative
+     afterwards: the stored epoch wins over a configuration file's, and starting
+     a node against a directory that holds a *different* chain (another network,
+     another registration authority) fails closed with a message naming both.
+
+   Regression test: `a_node_restarts_on_the_chain_it_left` in `obs-node` — it
+   mines, drops the node, reopens the same data directory with a *later*
+   `--genesis-timestamp`, asserts the height, head, state root and issued supply
+   are the ones it left, mines on, and then asserts that a different authority
+   is refused. Two `obs-consensus` store tests pin the genesis record itself: it
+   round-trips, and anything that is not exactly the written shape is an error.
+   The live check is the same thing by hand: stop the devnet node, start it
+   again against the same data directory, and the height, head and state root are
+   where they were.
+
 Three further corrections were to the run itself rather than the system: the
 acceptance script had three checks pointed at the wrong source file or looking
 for the wrong words, and it (like the docs) contained the mainnet genesis
@@ -203,8 +281,9 @@ test's own thread with a non-blocking `try_lock`, and deadlines distinguish the
 handshake rule under test (5 s) from the test's patience (120 s). Nothing a test
 asserts was relaxed, and the file went from 130-600 seconds to about four.
 
-Three consecutive full-workspace runs under ten CPU spinners now pass: 345
-tests, no failures each time. The rule this produced is in
+Three consecutive full-workspace runs under ten CPU spinners now pass, and the
+suite now stands at 352 tests (the regressions above added seven),
+no failures each time. The rule this produced is in
 [Testing](19-testing.md#tests-must-not-assume-an-idle-machine).
 
 ## Re-running it

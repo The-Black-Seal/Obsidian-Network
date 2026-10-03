@@ -175,6 +175,52 @@ impl ChainStore {
         let log_path = dir.join(crate::store::log_file_name(network));
         let (log, scan) = BlockLog::open(&log_path, fsync)?;
 
+        // A chain's genesis is a fact about the chain, not a value a command line
+        // gets to rewrite on restart.  The first open writes it down; every open
+        // after that reads it back, so a node resumes the chain it has.  A
+        // directory that holds a *different* chain is an error rather than a
+        // silent reset — that difference is what "fail closed" means for
+        // storage: an operator who starts a node against the wrong data
+        // directory, or with the wrong authority key, must not get a valid-looking
+        // empty chain instead of their history.
+        let genesis_path = dir.join(crate::store::genesis_file_name(network));
+        let genesis = match crate::store::read_genesis(&genesis_path)? {
+            Some(stored) => {
+                if stored.network != network || stored.registration_authority != genesis.registration_authority
+                {
+                    return Err(ChainError::Store(StoreError::GenesisMismatch {
+                        stored: format!(
+                            "{} founded at {} for authority {}",
+                            stored.network.name,
+                            stored.timestamp,
+                            Hash32(stored.registration_authority).to_hex()
+                        ),
+                        started: format!(
+                            "{} at {} for authority {}",
+                            network.name,
+                            genesis.timestamp,
+                            Hash32(genesis.registration_authority).to_hex()
+                        ),
+                    }));
+                }
+                stored
+            }
+            None => {
+                // A log with blocks but no genesis record is a directory whose
+                // chain cannot be reconstructed: the anchor is a hash, and a
+                // hash cannot be read back for the epoch that produced it.
+                // Guessing an epoch would silently orphan every block in the
+                // log, which is exactly the silent reset this record prevents.
+                if !scan.blocks.is_empty() {
+                    return Err(ChainError::Store(StoreError::GenesisUnrecorded {
+                        blocks: scan.blocks.len() as u64,
+                    }));
+                }
+                crate::store::write_genesis(&genesis_path, &genesis)?;
+                genesis
+            }
+        };
+
         let genesis_hash = genesis_anchor_hash(network, &genesis);
         let mut store = ChainStore {
             network,
@@ -326,7 +372,13 @@ impl ChainStore {
         }
 
         self.states.insert(hash, branch.clone());
-        if persist && self.fsync {
+        if persist {
+            // Every accepted block is written to the log.  Durability is what a
+            // storage layer owes a chain: what `fsync` chooses is how hard the
+            // write is pushed to the platter (one `sync_data` per block versus
+            // the operating system's own flush), never whether the block is
+            // written at all.  A node that could lose its whole chain by being
+            // restarted without a flag is not a node, it is a cache.
             self.log.append(&block)?;
         }
 
@@ -634,6 +686,13 @@ impl ChainStore {
     /// height 0 and the parent of the first block.  It is derived from the
     /// chain id, the protocol version and the genesis timestamp, so two
     /// networks can never share it.
+    /// The genesis this store was founded with, as read back from its data
+    /// directory.  This is the chain's identity; the configuration a process was
+    /// started with is only a proposal for a directory that has no chain yet.
+    pub fn genesis(&self) -> &GenesisConfig {
+        &self.genesis
+    }
+
     pub fn genesis_hash(&self) -> Hash32 {
         genesis_anchor_hash(self.network, &self.genesis)
     }

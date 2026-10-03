@@ -52,7 +52,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use obs_chain::block::Attestation;
 use obs_chain::chain::{Claim, TxId};
 use obs_chain::params::{
-    CLAIM_INTERVAL_SECS, GENESIS_TIMESTAMP, MAX_ATTESTATIONS_PER_BLOCK, MAX_BLOCK_DRIFT_SECS,
+    ATTESTATION_WINDOW_BLOCKS, CLAIM_INTERVAL_SECS, GENESIS_TIMESTAMP,
+    MAX_ATTESTATIONS_PER_BLOCK, MAX_BLOCK_DRIFT_SECS,
     MAX_CLAIMS_PER_DAY, MAX_INVITES_PER_ACCOUNT, MAX_TXS_PER_BLOCK, MIN_BLOCK_SPACING_SECS,
     PROTOCOL_DAY_SECS, PROTOCOL_VERSION, SLOT_DURATION_SECS, UNBONDING_PERIOD_SECS,
 };
@@ -388,7 +389,7 @@ pub struct Node {
 
 impl Node {
     /// Opens or creates a node.
-    pub fn open(config: NodeConfig) -> Result<Node, NodeError> {
+    pub fn open(mut config: NodeConfig) -> Result<Node, NodeError> {
         std::fs::create_dir_all(&config.data_dir).map_err(NodeError::DataDir)?;
         let store = ChainStore::open(
             &config.data_dir,
@@ -397,6 +398,13 @@ impl Node {
             config.fsync,
         )
         .map_err(NodeError::Chain)?;
+        // The store is the authority on which chain this data directory holds:
+        // it writes the genesis down when it founds one and reads it back
+        // afterwards, so `--genesis-timestamp now` on a restart resumes the
+        // existing chain instead of re-founding it.  The node adopts what the
+        // store has, so every answer it gives about its epoch is about the
+        // chain it is actually running.
+        config.genesis = store.genesis().clone();
         let peer_config = PeerConfig::new(
             config.network,
             store.genesis_hash(),
@@ -985,12 +993,48 @@ impl Node {
 
     /// Adds an attestation to the queue for the next block this node proposes.
     ///
-    /// The node does not take the sender's word for anything: the state machine
-    /// verifies the signature, the validator's activity and the ordering when
-    /// the block is applied.  Queueing is only bookkeeping.
+    /// The node does not take the sender's word for anything.  Signature
+    /// verification happens here as well as in the state machine, because a
+    /// queued attestation is one the node will put into a block it proposes: a
+    /// peer that could push a forged one would poison the node's own proposal
+    /// and make it build a block every node must reject.  Activity and ordering
+    /// are checked by the state machine when the block is applied; queueing is
+    /// otherwise only bookkeeping.
+    ///
+    /// Inclusion follows the chain's own ordering rule: a validator's
+    /// attestations must reference strictly increasing heights.  The queue
+    /// therefore holds at most one attestation per validator — the newest — so a
+    /// block built from it is applicable by construction.  An older attestation
+    /// left alongside a newer one for the same validator makes the whole block
+    /// invalid (`attestation_order`), which would cost the network every
+    /// attestation in it.
     pub fn queue_attestation(&mut self, attestation: Attestation, from: Option<[u8; 32]>) {
         let height = attestation.height;
         if height >= self.store.height() + 1 {
+            return;
+        }
+        if !attestation.verify_signature(self.config.network.chain_id) {
+            return;
+        }
+        if let Some(held) = self
+            .pending_attestations
+            .iter_mut()
+            .find(|held| held.node_key == attestation.node_key)
+        {
+            if held.height >= height {
+                // Already have this one, or a newer one: nothing to add.
+                return;
+            }
+            *held = attestation.clone();
+            self.events.push(NodeEvent::AttestationQueued {
+                node_key: attestation.node_key,
+                height,
+            });
+            if let Some(from) = from {
+                // Relay it, so a proposer that is better connected than we are
+                // can include it.
+                self.broadcast_except(Some(from), NetMessage::Attestations(vec![attestation]));
+            }
             return;
         }
         let duplicate = self.pending_attestations.iter().any(|held| {
@@ -1035,14 +1079,24 @@ impl Node {
     }
 
     /// The attestations worth including in the next block this node proposes.
+    ///
+    /// The filter mirrors the chain's own inclusion rules so a node never
+    /// proposes a block the state machine must reject: the attestation must
+    /// reference a block below the one being built, and it must be recent
+    /// enough to count as evidence that the validator was live
+    /// ([`ATTESTATION_WINDOW_BLOCKS`]).
     fn attestations_for_block(&self, state: &ChainState) -> Vec<Attestation> {
         if state.active_validators().is_empty() {
             return Vec::new();
         }
+        let building = state.height + 1;
         let mut sorted: Vec<Attestation> = self
             .pending_attestations
             .iter()
-            .filter(|attestation| attestation.height < state.height + 1)
+            .filter(|attestation| {
+                attestation.height < building
+                    && building - attestation.height <= ATTESTATION_WINDOW_BLOCKS
+            })
             .cloned()
             .collect();
         sorted.sort_by(|left, right| left.node_key.cmp(&right.node_key));
@@ -1145,11 +1199,28 @@ impl Node {
             .any(|tx| matches!(tx.kind, TxKind::Claim(_)));
         let height = candidate.header.height;
         let transactions = candidate.transactions.len();
+        // What this block carries, so exactly that can be dropped from the queue
+        // afterwards — see below.
+        let carried: Vec<([u8; 32], u64)> = candidate
+            .attestations
+            .iter()
+            .map(|attestation| (attestation.node_key, attestation.height))
+            .collect();
         let hash = match self.accept_block(None, candidate, outcome, true) {
             Ok(hash) => hash,
             Err(_) => return None,
         };
-        self.pending_attestations.clear();
+        // Drop only the attestations that were included.  Accepting the block
+        // queued this node's own attestation for the *new* head — that is what
+        // makes the next block carry evidence — so clearing the whole queue here
+        // would throw away the very attestation the chain is waiting for, and a
+        // node would attest forever without an attestation ever reaching a
+        // block.
+        self.pending_attestations.retain(|held| {
+            !carried
+                .iter()
+                .any(|(node_key, height)| *node_key == held.node_key && *height == held.height)
+        });
         self.events.push(NodeEvent::Mined {
             hash,
             height,

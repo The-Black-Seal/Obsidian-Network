@@ -316,13 +316,6 @@ pub fn chain_head_time(context: &Context) -> Option<u64> {
     u64::try_from(time).ok().filter(|time| *time > 0)
 }
 
-fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs())
-        .unwrap_or(0)
-}
-
 fn hex(bytes: &[u8]) -> String {
     obs_crypto::encoding::hex_encode(bytes)
 }
