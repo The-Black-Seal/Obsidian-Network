@@ -27,7 +27,7 @@ on one origin, with the real compiled wallet module at
 and staging on 8400/9400/8184 — were running on the same host at the same time
 from the same checkout, which is what check 101 exists to pin down.
 
-Rust suite: 370 passed, 0 failed. JavaScript suite: 19 passed, 0 failed.
+Rust suite: 374 passed, 0 failed. JavaScript suite: 19 passed, 0 failed.
 
 ## The 104 checks
 
@@ -433,6 +433,67 @@ Three consecutive full-workspace runs under ten CPU spinners now pass, and the
 suite now stands at 357 tests (the regressions above added twelve),
 no failures each time. The rule this produced is in
 [Testing](19-testing.md#tests-must-not-assume-an-idle-machine).
+
+## The security audit
+
+An adversarial pass was run against a live deployment — a real node, a real
+interface, real signing keys — rather than by reading the code alone. What was
+tried, and what happened:
+
+| Probe | Result |
+|-------|--------|
+| `GET /../Cargo.toml`, `/assets/../../Cargo.toml`, `%2e%2e`, `..%2f`, `%00`, `....//` | `404` / `400` (`bad_path`, `bad_path_encoding`) — no file outside the static root is reachable |
+| `/node/api/v1/../../status`, `/node/api/v1/account/proof`, `POST /node/api/v1/status` | `403 not_forwarded` — the read-through cannot be turned into a second route |
+| Request smuggling: `Content-Length` with `Transfer-Encoding`, duplicated `Content-Length`, a body that is also a second request, `TE: chunked` | `501` / `400` — the transport parses one request at a time and refuses the ambiguity |
+| Deep JSON nesting, at depths 500 to 30 000 and at the body-size limits, on both services | `400 bad_json` at every depth, one connection at a time, services alive. The parser has an explicit `MAX_DEPTH` |
+| Hostile JSON: lone surrogate, `NaN`, `1e999999`, duplicate keys, embedded NUL, 60 KiB hex, integer above `u128`, truncated body, invalid UTF-8, 780 KiB body | Named refusals (`bad_json`, `bad_hex`, `malformed_transaction`, `transaction_too_large`); nothing panicked |
+| P2P: frame claiming 512 MiB, claiming 4 GiB, zero-length frame, 64 KiB of noise, slow trickle | The peer is dropped; the node kept producing blocks |
+| Pagination: `limit=0`, `-1`, `abc`, `1e9`, `18446744073709551616`, `u64::MAX`, `offset=99999999999999999999` on the node and the explorer | Every response bounded (≤ 200 blocks); nonsense values fall back to the default rather than being passed through |
+| Arbitrary amounts: `u128::MAX`, `u128::MAX/2`, `MAX_SUPPLY + 1` in a transfer's bytes | **a defect — see below** |
+| Authentication: constant work whether the account exists, `ct_eq` compare, MFA always evaluated, lockout after the failure limit, tokens stored only as hashes | Pass, by reading `sign_in` against each claim |
+| Masking at every layer: node, interface read-through, explorer | A full `tx` shows `dobs1afj...k25n` at every layer, never the whole address |
+
+An audit by the people who wrote the code is not an independent audit. It is
+what the project can honestly claim, and it is listed here so the claim is
+checkable rather than asserted.
+
+### Twenty-first defect: unchecked multiplication in the fee
+
+`gas_fee_for` computed `amount.grains() * 2` without checking. A transaction's
+amount arrives from its bytes and was not bounded before the fee was derived
+from it, so any amount above `u128::MAX / 2` — roughly `1.7 × 10^38` grains —
+took one of two wrong turns depending on the build:
+
+* **debug**: `attempt to multiply with overflow`, a panic inside the state
+  machine. The state machine runs under the node's state lock, so the panic
+  poisoned the lock and the node stopped answering *anything* for the life of
+  the process. A remote party could have done this with a signed transaction.
+* **release**: the multiplication wrapped, and the fee returned had nothing to
+  do with the amount.
+
+Fixed in three places, each with its own regression test: the fee saturates at
+the cap when the doubling does not fit (which is the exact answer, since the cap
+binds from 50 OBS); the state machine refuses a transfer above the total supply
+by name before any arithmetic touches it; and `mul_div_ceil` checks its round-up.
+The failing test (`attempt to multiply with overflow`) was written and run
+*before* the fix, and the state-machine test asserts the rule name
+(`tx_amount_above_supply`), not merely a failure.
+
+### Twenty-second defect: a test that failed once in three hundred runs
+
+`a_word_that_is_not_in_the_wordlist_is_refused` swapped two words of a generated
+phrase and asserted the result was invalid, on the reasoning that a swap must
+break the BIP-39 checksum. It must not: measured over 20 000 phrases, 68 swapped
+phrases (0.34 %) were *still valid* phrases, because the swapped bits happened to
+carry a matching checksum. A test that fails once in three hundred runs teaches
+people to re-run rather than to read — the same rule as [defect
+16](19-testing.md#a-test-may-not-assert-a-property-of-a-random-values-spelling). It is now a
+deterministic search: the last word is replaced by the first word in the list
+that makes the phrase invalid.
+
+The audit found no path that mints value, changes a balance, approves a claim,
+alters a fee, a reward, a supply or a timing rule, or bypasses consensus — and
+the search for such a path is itself ran as an acceptance check.
 
 ## Re-running it
 

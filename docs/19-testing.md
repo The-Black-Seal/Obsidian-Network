@@ -12,7 +12,7 @@
 | Browser-path | `web/tests/*.test.mjs` | The real interface, booted against a live chain, driving the real wasm wallet |
 | Acceptance | `scripts/acceptance.sh` | 104 numbered checks over the whole system, end to end |
 
-Current counts: **370 Rust tests**, **19 JavaScript tests**, **104 acceptance
+Current counts: **374 Rust tests**, **19 JavaScript tests**, **104 acceptance
 checks**.
 
 ## A test may not assert a property of a random value's spelling
@@ -89,7 +89,7 @@ rule the harnesses are built to satisfy, and it was learned the hard way.
   discard a check's stderr, which is where the difference lives.
 
 Three consecutive full-workspace runs under ten CPU spinners pass — the suite,
-which now stands at 370 tests, with no failures — and they are the gate for any
+which now stands at 374 tests, with no failures — and they are the gate for any
 change to a harness.
 
 ## Invariants with dedicated tests
@@ -114,7 +114,7 @@ change to a harness.
 
 ```sh
 export PATH=/opt/rust/bin:$PATH CARGO_HOME=/opt/cargo CARGO_NET_OFFLINE=true
-cargo test --workspace                                   # 370 tests
+cargo test --workspace                                   # 374 tests
 bash scripts/build-web.sh --check                        # artifact matches source
 node --test web/tests/format.test.mjs \
              web/tests/wallet-module.test.mjs \

@@ -8,7 +8,10 @@ fail-closed, and the security-critical logic is written once, in Rust, and share
 by the node, the command-line client and the browser wallet.
 
 It does **not** claim to be unhackable, and no document, API response or screen
-in this project says so. Cryptographic systems fail through implementation bugs,
+in this project says so. **No third party has audited this code.** The
+adversarial pass described in [21](21-acceptance.md#the-security-audit) is the
+project's own testing, done by the people who wrote it, and that is not the same
+thing as an independent review. Cryptographic systems fail through implementation bugs,
 key management, and the humans running them; the honest goal is to make each of
 those failures hard, visible and survivable.
 
@@ -43,6 +46,34 @@ those failures hard, visible and survivable.
 * **Fail closed.** Unknown kinds, malformed encodings, bad roots, bad signatures,
   wrong chain ids, oversized payloads, unknown routes and unparseable responses
   are all refusals. There is no permissive mode and no "best effort".
+
+## Arithmetic discipline
+
+Money is counted in integer grains of 0.000000000001 OBS, never in floating
+point, and every operation on it is either *checked* or *provably bounded*:
+
+* **Untrusted amounts are bounded before use.** A transaction's amount is
+  whatever the sender's bytes say it is, so the state machine refuses any
+  transfer above the total supply (`tx_amount_above_supply`) before a fee or a
+  balance is computed from it. No account can ever hold more than the supply, so
+  this states the balance rule early rather than adding a consensus rule.
+* **Saturating where saturation is the truth.** The gas fee is
+  `clamp(ceil(amount × 2 / 10_000), 1 grain, 0.01 OBS)`. For an amount so large
+  that doubling it does not fit in `u128`, the fee is the cap — the cap binds
+  from 50 OBS, about 36 orders of magnitude below the overflow point, so there
+  is exactly one correct answer and the code returns it instead of wrapping.
+* **Checks, not arguments.** `checked_add`, `checked_sub`, `checked_mul` and
+  explicit `Option` returns on the monetary path. Arithmetic that cannot
+  overflow is still checked, because "cannot" is a claim about today's code.
+* **Regression tests over the extremes.** The fee is asserted at `0`, `1`,
+  `u128::MAX/2`, `u128::MAX` and a wide sweep; the state machine is asserted to
+  refuse an absurd amount *by name* rather than panicking.
+
+Two defects were found here by an adversarial pass and are recorded in
+[21](21-acceptance.md#the-security-audit): an unchecked multiplication in the
+fee function — a debug-build panic inside the state machine, which runs under
+the node's state lock, and therefore a node that stops answering — and a
+multiplication in `mul_div_ceil` whose round-up could wrap.
 
 ## Key management
 

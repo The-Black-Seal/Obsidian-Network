@@ -69,3 +69,18 @@ machine: a block whose fee accounting does not balance is invalid.
 
 Fees exist to price transfers, which are the only operation that moves value
 between accounts.
+
+## Amounts that cannot exist
+
+A transfer's amount comes from the sender's bytes, so it can be any `u128`.
+Two rules close that surface, and neither changes the economics:
+
+* A transfer above the maximum supply is refused with `tx_amount_above_supply`.
+  No account can hold that much, so the transfer is unpayable on every chain
+  this protocol can build; refusing it by name is the balance rule stated early,
+  before any arithmetic touches the amount.
+* The fee for a very large amount is the cap. `gas_fee_for` saturates at
+  `MAX_GAS_FEE` when doubling the amount would overflow a `u128` — the cap binds
+  from 50 OBS, so saturation is the exact answer, not an approximation.
+
+Both are covered in [Testing](19-testing.md) and in the state-machine suite.

@@ -107,7 +107,7 @@ runtime. See [Deployment](docs/16-networks-and-deployment.md#termux-a-node-on-a-
 ## Verifying it
 
 ```sh
-cargo test --workspace                        # 370 Rust tests
+cargo test --workspace                        # 374 Rust tests
 bash scripts/build-web.sh --check             # the wasm artifact matches the source
 node --test web/tests/format.test.mjs \
              web/tests/wallet-module.test.mjs \
