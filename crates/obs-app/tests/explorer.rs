@@ -248,8 +248,23 @@ impl Harness {
         // verifier rejects anything else — `12345.to_string()` is not a code.
         let code = format!("{:06}", secret.code_at(now + 30 - (now % 30)));
         registry.confirm_mfa(&token, &code, now).unwrap();
+        // The chain's own time, as the gateway takes it from the node: the head
+        // block's timestamp.  An invitation authorisation is dated in protocol
+        // time, never in this machine's clock.
+        let chain_time = {
+            let shared = self.api.node();
+            let node = shared.lock().unwrap();
+            node.head_state().last_timestamp
+        };
         registry
-            .attach_wallet(&token, keys.wallet_key, keys.node_key, keys.recovery_key, now)
+            .attach_wallet(
+                &token,
+                keys.wallet_key,
+                keys.node_key,
+                keys.recovery_key,
+                now,
+                Some(chain_time),
+            )
             .unwrap();
         // Sign in with a code computed for the moment of the request.  The clock
         // is read again on every attempt, so an attempt that lands on a

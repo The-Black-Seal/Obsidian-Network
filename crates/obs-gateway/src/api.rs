@@ -43,6 +43,10 @@ pub struct Gateway {
     /// Clock, injectable for tests.  A service's clock is administrative
     /// bookkeeping — never a consensus input.
     now: Box<dyn Fn() -> u64 + Send + Sync>,
+    /// Where the chain's own time comes from.  Unlike [`Gateway::now`] this *is*
+    /// a consensus input: an invitation authorisation is dated in the chain's
+    /// time, because the chain checks it against the block that carries it.
+    chain_time: Box<dyn Fn() -> Option<u64> + Send + Sync>,
     allowed_origins: Vec<String>,
 }
 
@@ -71,6 +75,10 @@ impl Gateway {
                 )
                 .unwrap_or(0)
             }),
+            // No chain time until a deployment supplies one: a gateway that
+            // cannot see the chain cannot date an authorisation, and refuses
+            // rather than guesses.
+            chain_time: Box::new(|| None),
             allowed_origins,
         }
     }
@@ -84,6 +92,28 @@ impl Gateway {
     pub fn with_clock(mut self, clock: Box<dyn Fn() -> u64 + Send + Sync>) -> Gateway {
         self.now = clock;
         self
+    }
+
+    /// Sets where the chain's own time comes from.
+    ///
+    /// This is the head block's timestamp, read from the node this deployment
+    /// follows.  It is deliberately not the service's clock: invitation
+    /// authorisations are dated in the chain's time, because that is what the
+    /// chain checks them against (see
+    /// [`crate::accounts::Registry::attach_wallet`]).  A deployment that cannot
+    /// answer `None` from here cannot complete a registration, and says so
+    /// rather than minting an authorisation the chain may refuse.
+    pub fn with_chain_clock(
+        mut self,
+        clock: Box<dyn Fn() -> Option<u64> + Send + Sync>,
+    ) -> Gateway {
+        self.chain_time = clock;
+        self
+    }
+
+    /// The chain's time, when this deployment can establish it.
+    pub fn chain_time(&self) -> Option<u64> {
+        (self.chain_time)()
     }
 
     /// Adds an origin allowed to make state-changing requests.
@@ -134,6 +164,7 @@ fn account_error(failure: AccountError) -> Response {
         AccountError::BadSession => (Status::FORBIDDEN, "bad_session"),
         AccountError::MfaNotEnrolled => (Status::CONFLICT, "mfa_not_enrolled"),
         AccountError::RecoveryUsed => (Status::CONFLICT, "recovery_used"),
+        AccountError::ChainTimeUnknown => (Status(503), "chain_time_unknown"),
         AccountError::Store(_) => (Status::INTERNAL, "storage_error"),
     };
     error(status, code, &failure.to_string())
@@ -472,7 +503,7 @@ impl Gateway {
         };
         match self
             .state()
-            .attach_wallet(&token, wallet_key, node_key, recovery_key, now)
+            .attach_wallet(&token, wallet_key, node_key, recovery_key, now, self.chain_time())
         {
             Ok(step) => ok(step_json(step)),
             Err(error) => account_error(error),

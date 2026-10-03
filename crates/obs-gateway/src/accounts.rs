@@ -166,6 +166,9 @@ pub enum AccountError {
     MfaNotEnrolled,
     /// The recovery code has already been used.
     RecoveryUsed,
+    /// The chain's own time could not be established, so no authorisation can be
+    /// issued: see [`Registry::attach_wallet`].
+    ChainTimeUnknown,
     /// Storage failed.
     Store(String),
 }
@@ -188,6 +191,10 @@ impl core::fmt::Display for AccountError {
             AccountError::BadSession => write!(f, "the session is not valid"),
             AccountError::MfaNotEnrolled => write!(f, "MFA is not enrolled for this account"),
             AccountError::RecoveryUsed => write!(f, "the recovery code has already been used"),
+            AccountError::ChainTimeUnknown => write!(
+                f,
+                "the chain's time is not available, so no invitation authorisation can be issued yet"
+            ),
             AccountError::Store(detail) => write!(f, "storage error: {}", detail),
         }
     }
@@ -833,6 +840,27 @@ impl Registry {
     ///
     /// The service records public keys and returns the commitment the client
     /// needs.  It never receives, requests or accepts anything private.
+    /// Completes registration and mints the invitation authorisation.
+    ///
+    /// `now` is the service's clock, used for sessions and records.  `chain_time`
+    /// is **the chain's own time** — the head block's timestamp — and it is what
+    /// the authorisation is dated with, because that is the clock the chain
+    /// checks it against: a block accepts a registration when
+    /// `authorisation.issued_at <= block time <= authorisation.expires_at`.
+    ///
+    /// Dated with a wall clock instead, an authorisation can be *unusable*: a
+    /// network whose protocol time lags the operator's clock — a brand-new
+    /// network, or one that has been quiet — advances at most
+    /// [`chain::MAX_BLOCK_DRIFT_SECS`] of protocol time per block, so a
+    /// registration stamped ten minutes into the future cannot be included until
+    /// the chain has caught up.  For a network's *first* block that is a
+    /// deadlock: the block that would carry the founder's registration is the
+    /// only block that can carry it, and its time can never reach the stamp.
+    /// Dating authorisations in chain time removes the failure entirely, and is
+    /// the honest reading of a field the chain interprets in protocol time.
+    ///
+    /// Callers that cannot establish the chain's time must not guess: pass
+    /// `None` and this refuses, rather than mint something the chain may reject.
     pub fn attach_wallet(
         &mut self,
         token: &str,
@@ -840,6 +868,7 @@ impl Registry {
         node_key: [u8; 32],
         recovery_key: [u8; 32],
         now: u64,
+        chain_time: Option<u64>,
     ) -> Result<Step, AccountError> {
         if wallet_key == node_key || wallet_key == recovery_key || node_key == recovery_key {
             return Err(AccountError::BadPassword(
@@ -918,16 +947,21 @@ impl Registry {
         };
 
         // Phase four: mint the invitation authorisation while the code is still
-        // in memory, then commit.
+        // in memory, then commit.  The chain's time, not ours: see this method's
+        // documentation for why the difference decides whether a new network can
+        // start at all.
         let issuer_address = self.issuer_address(invite_index);
         let authorization = match (&self.authority, &invite_code) {
-            (Some(authority), Some(code)) => Some(authority.authorize(
-                code,
-                Hash32(commitment),
-                now,
-                now + AUTHORIZATION_SECS,
-                issuer_address,
-            )),
+            (Some(authority), Some(code)) => {
+                let issued_at = chain_time.ok_or(AccountError::ChainTimeUnknown)?;
+                Some(authority.authorize(
+                    code,
+                    Hash32(commitment),
+                    issued_at,
+                    issued_at + AUTHORIZATION_SECS,
+                    issuer_address,
+                ))
+            }
             _ => None,
         };
         let activation = Activation {

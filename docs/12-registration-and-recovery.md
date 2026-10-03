@@ -89,3 +89,38 @@ no path by which a service operator can recover a wallet.
 * a TOTP secret in the clear (sealed with the service key);
 * a Gmail address in chain state (only a commitment);
 * an invitation code in any log or API response.
+
+## The authorisation is dated in the chain's time
+
+The last step of registration mints an **invitation authorisation**: the
+authority's signature binding one invitation code to one Gmail identity. The
+wallet puts it in the registration transaction, and the chain accepts that
+transaction only when
+
+```text
+authorisation.issued_at  <=  block time  <=  authorisation.expires_at
+```
+
+`block time` is **protocol time**. So `issued_at` must be protocol time too, and
+that is what the service stamps: the timestamp of the node's head block, read
+from the node it follows, never the machine's wall clock. The window is still
+24 hours — measured in protocol time, like every other chain deadline.
+
+The distinction is not pedantic. Protocol time advances at most
+`MAX_BLOCK_DRIFT_SECS` (60) per block, so a chain that is behind the wall clock —
+a brand-new network at its epoch, or one that has been quiet — cannot include a
+transaction stamped with a wall clock that is minutes ahead. On a running chain
+that costs a delay. On a network's **first** block it would be permanent: block 1
+is the only block that can carry the founder's registration, because during the
+bootstrap window a proposer must already be a registered account, an active
+validator, or an account that the block itself registers. Dated in chain time,
+the founder's registration goes in whenever the founder gets to it.
+
+A deployment that cannot establish the chain's time — the node is unreachable —
+**refuses** the step with `503 chain_time_unknown` rather than minting an
+authorisation it cannot date correctly. Failing closed is the whole point: an
+unusable authorisation looks like success and behaves like a dead end.
+
+The same rule applies to the operator tools: `obs-cli devnet register` stamps its
+authorisation with the chain's head time, and `obs-cli register` — which goes
+through this service — inherits the service's stamp.

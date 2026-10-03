@@ -438,6 +438,120 @@ fn the_genesis_block_registers_the_founder_and_mines_the_allocation_once() {
     );
 }
 
+/// A network settles its own genesis moment, and the founder may not register
+/// for hours afterwards.  This is the case that used to be a deadlock.
+///
+/// The first block is the only block that can carry the founder's registration,
+/// and protocol time advances at most sixty seconds per block — so a founder who
+/// reaches the registration server ten minutes after the epoch needs an
+/// authorisation dated *within the chain's reach*, not ten minutes into its
+/// future.  Dated in chain time it goes in immediately; this test pins both
+/// halves of that: the registration lands, and the genesis allocation is issued.
+#[test]
+fn a_founder_registering_long_after_the_epoch_still_founds_the_chain() {
+    let devnet = Devnet::launch();
+    let founder = Keypair::from_seed(&[21u8; 32]);
+    let mut node = devnet.node("late-funding", 22, Some(&founder));
+
+    // Ten minutes of wall clock pass before the founder gets to it.  The chain
+    // has produced nothing, so protocol time is still the genesis moment.
+    let genesis_time = node.head_state().last_timestamp;
+    set_clock_to(&mut node, unix_now() + 600);
+    assert_eq!(node.height(), 0);
+    assert!(node.protocol_time() >= genesis_time + 600, "the wall clock moved on");
+
+    // The registration is dated in the chain's time, as the gateway dates it.
+    let registration = register_tx(
+        &founder,
+        "founder@gmail.com",
+        "INVITE-LATE",
+        node.head_state().last_timestamp,
+    );
+    node.submit_transaction(registration)
+        .expect("the registration is poolable");
+
+    assert!(
+        node.mine_once().is_some(),
+        "a chain whose founder arrives late must still be able to start: {:?}",
+        node.recent_events(8)
+    );
+    assert_eq!(node.height(), 1);
+    assert!(node.head_state().genesis_issued, "the allocation is issued once");
+    assert_eq!(
+        node.head_state().treasury,
+        Some(address_of(&founder)),
+        "the genesis wallet is the treasury"
+    );
+}
+
+/// An authorisation dated beyond what the chain's own time can reach is refused
+/// outright: the pool will not take it, and the chain is told why.
+///
+/// This is the fail-closed half.  A client that dates an authorisation with its
+/// own wall clock while the chain has not reached that time produces exactly
+/// this transaction, and it is better refused with a rule than accepted and
+/// never applied.
+#[test]
+fn a_registration_dated_beyond_the_chain_is_refused_with_a_rule() {
+    let devnet = Devnet::launch();
+    let founder = Keypair::from_seed(&[23u8; 32]);
+    let mut node = devnet.node("future-stamp", 24, Some(&founder));
+
+    let genesis_time = node.head_state().last_timestamp;
+    // The node's own clock moves ahead, but the chain is still at its epoch and
+    // can only reach sixty seconds per block.  An authorisation an hour into the
+    // future cannot be part of any block the chain is able to build.
+    set_clock_to(&mut node, unix_now() + 600);
+    let registration = register_tx(&founder, "late@gmail.com", "INVITE-LATE", genesis_time + 3_600);
+    match node.submit_transaction(registration) {
+        Ok(_) => panic!("an authorisation from the chain's future must not be pooled"),
+        Err(error) => assert!(
+            format!("{:?}", error).contains("invite_not_yet_valid"),
+            "the refusal names the rule that caught it: {:?}",
+            error
+        ),
+    }
+    assert_eq!(node.height(), 0);
+    assert!(!node.head_state().genesis_issued, "nothing was minted");
+}
+
+/// The subtler half of the same hazard, pinned so it cannot come back silently.
+///
+/// An authorisation stamped *after the chain's reach but before the node's own
+/// clock* passes the pool — the pool judges validity against the present, not
+/// against the block that may carry it — and then no block can include it.  On a
+/// running chain that costs a delay; on a network's **first** block it would be a
+/// deadlock, because block 1 is the only block that can carry the founder's
+/// registration.  The state stays clean (height 0, nothing minted, no
+/// allocation), which is why the fix belongs at the issuer: the gateway and
+/// `obs-cli` date authorisations in the chain's time (see
+/// [`a_founder_registering_long_after_the_epoch_still_founds_the_chain`]).
+#[test]
+fn a_registration_ahead_of_the_chain_but_inside_the_clock_mints_nothing() {
+    let devnet = Devnet::launch();
+    let founder = Keypair::from_seed(&[25u8; 32]);
+    let mut node = devnet.node("ahead-of-chain", 26, Some(&founder));
+
+    let genesis_time = node.head_state().last_timestamp;
+    // Ahead of the chain's reach (epoch + 60), behind the node's clock (+600).
+    set_clock_to(&mut node, unix_now() + 600);
+    let stamp = genesis_time + 300;
+    let registration = register_tx(&founder, "ahead@gmail.com", "INVITE-AHEAD", stamp);
+    node.submit_transaction(registration)
+        .expect("the pool judges this against the present, and the present has arrived");
+
+    assert!(
+        node.mine_once().is_none(),
+        "the chain must not produce a block it cannot validate"
+    );
+    assert_eq!(node.height(), 0, "no block landed");
+    assert!(!node.head_state().genesis_issued, "no allocation was minted");
+    assert!(
+        node.head_state().treasury.is_none(),
+        "the treasury is not set by a block that never applied"
+    );
+}
+
 #[test]
 fn claims_are_paced_by_protocol_time_and_the_daily_window() {
     let devnet = Devnet::launch();

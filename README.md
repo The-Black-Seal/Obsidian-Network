@@ -66,7 +66,7 @@ open http://127.0.0.1:8081            # Mining · Wallet · Explorer · Develope
 ## Verifying it
 
 ```sh
-cargo test --workspace                        # 338 Rust tests
+cargo test --workspace                        # 345 Rust tests
 bash scripts/build-web.sh --check             # the wasm artifact matches the source
 node --test web/tests/format.test.mjs \
              web/tests/wallet-module.test.mjs \

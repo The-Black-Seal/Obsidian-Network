@@ -98,6 +98,28 @@ fn network_by_name(name: &str) -> Option<Network> {
     }
 }
 
+/// The chain's own time: the timestamp of the node's head block.
+///
+/// This is the clock the chain checks invitation authorisations against, and the
+/// only clock a registration may be dated with.  `None` when the node cannot be
+/// reached — the caller then refuses the step instead of guessing, which is the
+/// fail-closed behaviour: an authorisation this deployment cannot date correctly
+/// is one it must not mint.
+fn node_head_time(node_url: &str) -> Option<u64> {
+    let client = obs_rpc::client::Client::with_timeout(std::time::Duration::from_secs(4));
+    let response = client
+        .get(&format!("{}/api/v1/status", node_url.trim_end_matches('/')))
+        .ok()?;
+    if response.status.code() != 200 {
+        return None;
+    }
+    let value = obs_rpc::client::json_body(&response).ok()?;
+    let time = value
+        .get("last_block_time")
+        .and_then(obs_primitives::json::Json::as_i128)?;
+    u64::try_from(time).ok().filter(|time| *time > 0)
+}
+
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let args = match Args::parse("obs-app", &argv, KNOWN) {
@@ -250,7 +272,18 @@ fn main() -> ExitCode {
             }
         };
         let registry = Arc::new(Mutex::new(registry));
-        let gateway = Arc::new(Gateway::from_shared(Arc::clone(&registry), network));
+        // The chain's own time, for the invitation authorisations the gateway
+        // mints.  Read from the node this deployment follows, never from this
+        // machine's clock: a chain advances its protocol time at its own pace,
+        // and an authorisation dated ahead of it is one the chain cannot accept
+        // (see obs_gateway::accounts::Registry::attach_wallet).
+        let chain_clock = {
+            let node_url = node_url.clone();
+            Box::new(move || node_head_time(&node_url))
+        };
+        let gateway = Arc::new(
+            Gateway::from_shared(Arc::clone(&registry), network).with_chain_clock(chain_clock),
+        );
         app = app.with_accounts(Arc::clone(&registry)).with_gateway(gateway);
         println!("obs-app: accounts        {}", accounts_path.display());
         println!(

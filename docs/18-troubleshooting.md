@@ -137,3 +137,36 @@ obs-app --print-routes | grep logo        # the route is always registered
 * **Only images are accepted.** A source that answers HTML — an error page, a
   login redirect — is refused with `502`, because serving that as a mark would be
   worse than showing the drawn seal.
+
+## A new network will not produce its first block
+
+The first block of a network is special: during the bootstrap window a proposer
+must be an active validator, an already-registered account, or the account that
+the block itself registers — so a brand-new chain produces block 1 only when the
+founder's registration reaches the pool. If the chain sits at height 0 with
+`block_rejected` / `rule block_proposer` events, the founder's registration is
+either not there or not usable.
+
+Check, in this order:
+
+```sh
+curl -s localhost:7200/api/v1/status   # height 0? last_block_time is the chain's time
+curl -s localhost:7200/api/v1/mempool  # is the registration pooled?
+curl -s 'localhost:7200/api/v1/events?limit=5'
+```
+
+* **Nothing pooled.** The founder has not registered yet: run
+  `obs-cli devnet register` (or, on a real network, have the founder complete the
+  registration flow). The chain cannot start without it, by design.
+* **Pooled but never mined.** The authorisation is dated beyond the chain's
+  reach. The chain advances at most 60 seconds of protocol time per block, so an
+  authorisation stamped with a wall clock minutes ahead of the epoch cannot be
+  included in block 1 — and block 1 is the only one that can carry it. The
+  service and the CLI date authorisations in **chain time** for exactly this
+  reason (see [registration](12-registration-and-recovery.md#the-authorisation-is-dated-in-the-chains-time));
+  an authorisation from an older build, or from a tool that dates with its own
+  clock, has this shape. Register again with a current tool, or found the network
+  again.
+* **`chain_time_unknown` from the registration service.** The service cannot
+  reach the node it follows, so it will not date an authorisation. Start the node,
+  or point `--node-url` at it.

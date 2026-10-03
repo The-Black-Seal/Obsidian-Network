@@ -91,6 +91,16 @@ struct Harness {
 
 impl Harness {
     fn launch() -> Harness {
+        Harness::launch_inner(true)
+    }
+
+    /// A deployment with no chain clock at all: the shape an operator gets when
+    /// the node is unreachable, and the one that must refuse rather than guess.
+    fn launch_without_chain_clock() -> Harness {
+        Harness::launch_inner(false)
+    }
+
+    fn launch_inner(chain_clock: bool) -> Harness {
         let dir = temp_dir("e2e");
         let authority_path = dir.join("authority.key");
         let authority = Authority::generate(&authority_path, NETWORK).unwrap();
@@ -119,7 +129,19 @@ impl Harness {
         let registry = Registry::open(AtomicStore::open(&store_path, false).unwrap(), NETWORK, service_key)
             .unwrap()
             .with_authority(authority);
-        let gateway = Arc::new(Gateway::new(registry, NETWORK));
+        // The gateway dates invitation authorisations in the chain's own time,
+        // so this deployment supplies the chain's clock: here, the timestamp of
+        // the node's head block, read the same way obs-app reads it.
+        let chain_api = Arc::clone(&api);
+        let gateway = Arc::new(match chain_clock {
+            true => Gateway::new(registry, NETWORK).with_chain_clock(Box::new(move || {
+                let shared = chain_api.node();
+                let node = shared.lock().map_err(|_| ()).ok()?;
+                Some(node.head_state().last_timestamp)
+            })),
+            // A deployment that cannot see the chain: it must not guess.
+            false => Gateway::new(registry, NETWORK),
+        });
         let gateway_port = free_port();
         let gateway_handler = Arc::clone(&gateway);
         let gateway_shutdown = Arc::new(AtomicBool::new(false));
@@ -282,13 +304,14 @@ fn sign_in(harness: &Harness, client: &Client, gmail: &str, secret: &Secret) -> 
 }
 
 /// Walks the six enrolment steps over HTTP.
-fn enrol(
+/// Walks steps one to five and leaves the enrolment at the wallet step,
+/// returning the session token, the authenticator secret and the recovery code.
+fn walk_to_wallet_step(
     harness: &Harness,
     client: &Client,
     gmail: &str,
     code: &str,
-    keys: &obs_wallet::PublicKeys,
-) -> Enrolled {
+) -> (String, Secret, String) {
     let begun = post(
         client,
         &harness.url("/v1/register/begin"),
@@ -369,6 +392,18 @@ fn enrol(
     let confirmed = confirmed.expect("an authenticator code must be accepted");
     assert_eq!(confirmed.get("stage").unwrap().as_str(), Some("wallet"));
 
+    (token, secret, recovery_code)
+}
+
+/// Walks the six enrolment steps over HTTP.
+fn enrol(
+    harness: &Harness,
+    client: &Client,
+    gmail: &str,
+    code: &str,
+    keys: &obs_wallet::PublicKeys,
+) -> Enrolled {
+    let (token, secret, recovery_code) = walk_to_wallet_step(harness, client, gmail, code);
     let activation = post(
         client,
         &harness.url("/v1/register/wallet"),
@@ -392,6 +427,85 @@ fn enrol(
         recovery_code,
         activation,
     }
+}
+
+/// The invitation authorisation is dated in the **chain's** time, because that
+/// is the clock the chain checks it against.
+///
+/// The chain accepts a registration when
+/// `authorisation.issued_at <= block time <= authorisation.expires_at`, and
+/// protocol time advances at most a minute per block.  Dated with the service's
+/// wall clock, an authorisation minted while the chain is behind — a brand-new
+/// network, or one that has been quiet — cannot be included until the chain
+/// catches up; dated in chain time it is includable in the very next block.  For
+/// a network's first block that difference is the difference between starting
+/// and never starting, which is why this is asserted rather than assumed.
+#[test]
+fn the_invitation_authorisation_is_dated_in_chain_time() {
+    let harness = Harness::launch();
+    let client = harness.client();
+    let invite = "OBS-CHAINTIME-AAAA-BBBB";
+    harness.mint_invite(invite);
+
+    let keys = harness.wallet.public_keys();
+    let enrolled = enrol(&harness, &client, "chain.time@gmail.com", invite, &keys);
+
+    // The chain's own time, read from the node this deployment follows.
+    let chain_time = {
+        let shared = harness.api.node();
+        let node = shared.lock().unwrap();
+        node.head_state().last_timestamp
+    };
+    let authorization = authorization_from_json(
+        enrolled
+            .activation
+            .get("invite_authorization")
+            .expect("an authorisation is issued"),
+        NETWORK,
+    )
+    .expect("the authorisation parses");
+
+    assert_eq!(
+        authorization.issued_at, chain_time,
+        "the authorisation is stamped with the chain's time, not this machine's"
+    );
+    assert!(
+        authorization.issued_at <= chain_time + 60,
+        "an authorisation stamped beyond the chain's reach could never be included"
+    );
+    assert_eq!(
+        authorization.expires_at - authorization.issued_at,
+        obs_gateway::accounts::AUTHORIZATION_SECS,
+        "the window is measured in protocol time, like every other chain deadline"
+    );
+}
+
+/// A deployment that cannot establish the chain's time refuses to mint an
+/// authorisation, rather than minting one the chain may reject.
+#[test]
+fn a_gateway_that_cannot_see_the_chain_refuses_to_date_an_authorisation() {
+    let harness = Harness::launch_without_chain_clock();
+    let client = harness.client();
+    let invite = "OBS-NOCHAIN-CCCC-DDDD";
+    harness.mint_invite(invite);
+
+    let (token, _secret, _recovery_code) =
+        walk_to_wallet_step(&harness, &client, "no.chain@gmail.com", invite);
+    let keys = harness.wallet.public_keys();
+    let status = refused(
+        &client,
+        &harness.url("/v1/register/wallet"),
+        Json::obj([
+            ("token", Json::Str(token)),
+            ("wallet_key", Json::Str(obs_crypto::encoding::hex_encode(&keys.wallet_key))),
+            ("node_key", Json::Str(obs_crypto::encoding::hex_encode(&keys.node_key))),
+            (
+                "recovery_key",
+                Json::Str(obs_crypto::encoding::hex_encode(&keys.recovery_key)),
+            ),
+        ]),
+    );
+    assert_eq!(status, 503, "no chain time means no authorisation");
 }
 
 #[test]

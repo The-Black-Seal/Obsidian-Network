@@ -125,6 +125,15 @@ pub fn register(context: &Context, args: &Args) -> Result<(), CliError> {
     keys::write_private(&secrets_path, &document)?;
     println!("obs-cli: secrets written to {}", secrets_path.display());
 
+    // Step five is confirmed here, with a code this machine computes from the
+    // secret it was just given: the enrolment is not complete until a code from
+    // the authenticator has been accepted, and leaving that to a human would
+    // leave the account unactivated.  The code is computed for the *next* step
+    // boundary when this request lands near one, so a registration is never
+    // refused for a reason that has nothing to do with it.
+    confirm_mfa(context, &token, mfa_secret.trim())?;
+    println!("obs-cli: step 5/6 MFA confirmed");
+
     let keys = wallet.public_keys();
     let step = post(context, "register/wallet", Json::obj([
         ("token", Json::Str(token.clone())),
@@ -249,6 +258,68 @@ fn session(args: &Args) -> Result<String, CliError> {
     Ok(text.trim().to_string())
 }
 
+/// The authenticator secret inside whatever step five returned.
+///
+/// The service hands back a provisioning URI — the form a person scans — and the
+/// secret is inside it.  A bare secret is accepted too, so this works whichever
+/// form a deployment returns.
+fn authenticator_secret(issued: &str) -> Result<&str, CliError> {
+    let issued = issued.trim();
+    if !issued.starts_with("otpauth://") {
+        return Ok(issued);
+    }
+    issued
+        .split("secret=")
+        .nth(1)
+        .and_then(|rest| rest.split('&').next())
+        .filter(|secret| !secret.is_empty())
+        .ok_or_else(|| {
+            CliError::Failed("the provisioning URI carries no authenticator secret".to_string())
+        })
+}
+
+/// Confirms the authenticator enrolment with a code computed from the secret.
+///
+/// A TOTP code is only valid inside its own thirty-second step, so a request that
+/// lands on a boundary is retried with the code for the step that has begun
+/// rather than the one that just ended.
+fn confirm_mfa(context: &Context, token: &str, issued: &str) -> Result<(), CliError> {
+    // Step five returns a provisioning URI, which is what a person scans; the
+    // secret inside it is what a program uses.  Accept either form.
+    let secret_base32 = authenticator_secret(issued)?;
+    let secret = obs_crypto::totp::Secret::parse_base32(secret_base32)
+        .map_err(|error| CliError::Failed(format!("the MFA secret is not usable: {}", error)))?;
+    let mut last = None;
+    for attempt in 0..3u64 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs())
+            .unwrap_or(0);
+        // Step forward when the current window is nearly over.
+        let at = now + if now % 30 >= 25 { 30 - (now % 30) } else { 0 };
+        let code = format!("{:06}", secret.code_at(at));
+        let response = context
+            .client
+            .post_json(
+                &format!("{}/v1/register/mfa/confirm", context.gateway_url),
+                &Json::obj([
+                    ("token", Json::Str(token.to_string())),
+                    ("code", Json::Str(code)),
+                ]),
+            )
+            .map_err(|error| CliError::Failed(error.to_string()))?;
+        if response.status.code() < 400 {
+            return Ok(());
+        }
+        last = Some(response.status.code());
+        std::thread::sleep(std::time::Duration::from_millis(400 * (attempt + 1)));
+    }
+    Err(CliError::Failed(format!(
+        "the service refused the authenticator code (last status {:?}); step 5 of 6 could not be confirmed",
+        last
+    )))
+}
+
 fn post(context: &Context, path: &str, body: Json) -> Result<Json, CliError> {
     context.post(&format!("{}/v1/{}", context.gateway_url, path), &body)
 }
@@ -274,4 +345,36 @@ pub fn public_keys(_context: &Context, args: &Args) -> Result<(), CliError> {
     ]);
     print_json(&body);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_authenticator_secret_is_read_from_either_form() {
+        // The URI form: what a person scans, and what the service returns.
+        let uri = "otpauth://totp/Obsidian:someone@gmail.com?secret=JBSWY3DPEHPK3PXP&issuer=Obsidian";
+        assert_eq!(authenticator_secret(uri).unwrap(), "JBSWY3DPEHPK3PXP");
+        // The bare form, for a deployment that returns the secret itself.
+        assert_eq!(authenticator_secret(" JBSWY3DPEHPK3PXP\n").unwrap(), "JBSWY3DPEHPK3PXP");
+        // A URI with no secret is refused rather than treated as a secret: an
+        // enrolment that silently confirmed the wrong value would be worse than
+        // a clear failure.
+        assert!(authenticator_secret("otpauth://totp/Obsidian:x?issuer=Obsidian").is_err());
+        assert!(authenticator_secret("otpauth://totp/Obsidian:x?secret=&issuer=Obsidian").is_err());
+    }
+
+    #[test]
+    fn a_secret_from_the_service_produces_a_code_the_verifier_accepts() {
+        // Six digits, always: the verifier refuses anything that is not a
+        // fixed-width code, so a code must never be formatted without padding.
+        // Twenty bytes of entropy, the minimum the TOTP implementation accepts.
+        let secret =
+            obs_crypto::totp::Secret::parse_base32("JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP").unwrap();
+        let code = format!("{:06}", secret.code_at(1_700_000_000));
+        assert_eq!(code.len(), 6);
+        assert!(code.chars().all(|c| c.is_ascii_digit()));
+        assert!(secret.code_at(1_700_000_000) < 1_000_000);
+    }
 }

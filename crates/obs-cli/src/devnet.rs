@@ -221,12 +221,25 @@ pub fn register_founder(
             return Ok(None);
         }
     }
-    let now = unix_now();
+    // The authorisation is dated in the *chain's* time, not this machine's: the
+    // chain checks `issued_at <= block time`, and protocol time advances at most
+    // a minute per block.  A devnet whose founder registers a few minutes after
+    // genesis would therefore be un-startable with a wall-clock stamp — the only
+    // block that can carry the founder's registration is block 1, and its time
+    // can never reach a stamp ten minutes ahead of the chain.  Dated at the
+    // head's own time, the registration is includable in the very next block
+    // whenever the operator gets to it.
+    let chain_time = chain_head_time(context).ok_or_else(|| {
+        CliError::Failed(
+            "the chain's time is unknown: the node must be running before the founder can register"
+                .to_string(),
+        )
+    })?;
     let authorization = authority.authorize(
         invite_code,
         obs_chain::gmail_commitment(context.network.chain_id, canonical),
-        now,
-        now + 3_600,
+        chain_time,
+        chain_time + 3_600,
         None,
     );
     let keys = wallet.public_keys();
@@ -286,6 +299,21 @@ fn founder_state(
         return Err(format!("the node refused the proof: {}", rule));
     }
     Ok(Some(parsed))
+}
+
+/// The chain's own time: the timestamp of the node's head block.
+///
+/// Every time the chain checks is protocol time, so this — not the wall clock —
+/// is what a registration may be dated with.
+pub fn chain_head_time(context: &Context) -> Option<u64> {
+    let url = format!("{}/api/v1/status", context.node_url);
+    let response = context.client.get(&url).ok()?;
+    if response.status.code() != 200 {
+        return None;
+    }
+    let value = obs_rpc::client::json_body(&response).ok()?;
+    let time = value.get("last_block_time").and_then(Json::as_i128)?;
+    u64::try_from(time).ok().filter(|time| *time > 0)
 }
 
 fn unix_now() -> u64 {

@@ -80,3 +80,23 @@ The operator CLI never prints the code it mints in the clear to a log; the code
 goes to the caller. The mainnet **genesis** invitation is not minted by tooling
 in normal operation and is never published — if it is lost, the network needs a
 new genesis, not a reprint.
+
+## Registering an account from the command line
+
+```sh
+obs-cli register --gmail someone@gmail.com --invite <code> \
+                --keystore ./someone.keystore.json \
+                --gateway-url http://127.0.0.1:8081 --node-url http://127.0.0.1:7200
+```
+
+Six steps, no email verification code, and the wallet is created on this machine
+before the account exists. The authenticator secret is confirmed from the same
+machine (a code is computed from the secret the service just issued), and the
+secrets are written to a `0600` file next to the keystore: the account recovery
+code, the authenticator secret and the provisioning URI, shown once and never
+again.
+
+The invitation authorisation the service returns is dated in the chain's time, so
+the registration transaction is includable in the next block whenever the chain
+is ready for it — including on a brand-new network, whose first block is the only
+one that can carry the founder's registration.
