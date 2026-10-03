@@ -11,8 +11,9 @@ It does **not** claim to be unhackable, and no document, API response or screen
 in this project says so. **No third party has audited this code.** The
 adversarial pass described in [21](21-acceptance.md#the-security-audit) is the
 project's own testing, done by the people who wrote it, and that is not the same
-thing as an independent review. Cryptographic systems fail through implementation bugs,
-key management, and the humans running them; the honest goal is to make each of
+thing as an independent review.
+
+Cryptographic systems fail through implementation bugs, key management, and the humans running them; the honest goal is to make each of
 those failures hard, visible and survivable.
 
 ## Assets and the threats to them
