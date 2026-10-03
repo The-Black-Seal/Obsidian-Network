@@ -546,11 +546,16 @@ impl PeerManager {
                 .and_then(|stats| stats.last_seen)
                 .unwrap_or(handle.connected_at);
             let idle = now.duration_since(last_seen);
-            if idle >= idle_timeout {
-                timeouts.push(*node_key);
-            } else if idle >= ping_interval && stats.and_then(|stats| stats.ping_sent).is_none() {
+            let probed = stats.and_then(|stats| stats.ping_sent).is_some();
+            // Probe first, then drop.  A peer is never removed before it has been
+            // given the chance to answer a ping, even if this heartbeat loop was
+            // delayed long enough for the idle timeout to have passed already:
+            // the rule is "silent after a probe", not "idle for long enough".
+            if idle >= ping_interval && !probed {
                 self.ping_counter += 1;
                 pings.push((*node_key, self.ping_counter));
+            } else if idle >= idle_timeout {
+                timeouts.push(*node_key);
             }
         }
         for (node_key, nonce) in pings {

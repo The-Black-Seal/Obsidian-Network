@@ -165,6 +165,9 @@ pub const ROUTES: &[Route] = &[
     Route { path: "/v1/portal/keys/{id}/rotate", method: "POST", summary: "rotate an API key; the old secret stops working immediately", scope: None },
     Route { path: "/v1/portal/usage", method: "GET", summary: "request counts and rate-limit refusals per key", scope: None },
     Route { path: "/v1/portal/openapi.json", method: "GET", summary: "the OpenAPI description of this API", scope: None },
+    Route { path: "/node/api/v1/{read-path}", method: "GET", summary: "read-through to a node's public API: status, supply, params, mining, blocks, transactions, validators, mempool, peers, events", scope: None },
+    Route { path: "/node/api/v1/transactions", method: "POST", summary: "forwards an already-signed transaction; this service holds no key and cannot alter or forge one", scope: None },
+    Route { path: "/node/api/v1/account/proof", method: "POST", summary: "forwards an account's signed proof of ownership so its holder may read that account's own state; a third party cannot use it, and an unknown account is a 404", scope: None },
     Route { path: "/healthz", method: "GET", summary: "liveness", scope: None },
 ];
 
