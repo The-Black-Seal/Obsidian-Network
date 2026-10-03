@@ -10,9 +10,9 @@
 | Property | in `obs-chain`, `obs-primitives` | Invariants over many generated inputs |
 | Adversarial | `obs-consensus`, `obs-mempool`, node tests | Reorgs, double-spends, nonce gaps, invalid roots, bad signatures |
 | Browser-path | `web/tests/*.test.mjs` | The real interface, booted against a live chain, driving the real wasm wallet |
-| Acceptance | `scripts/acceptance.sh` | 100 numbered checks over the whole system, end to end |
+| Acceptance | `scripts/acceptance.sh` | 101 numbered checks over the whole system, end to end |
 
-Current counts: **358 Rust tests**, **15 JavaScript tests**, **100 acceptance
+Current counts: **362 Rust tests**, **15 JavaScript tests**, **101 acceptance
 checks**.
 
 ## What the tests specifically refuse to assume
@@ -65,8 +65,9 @@ rule the harnesses are built to satisfy, and it was learned the hard way.
   Confirm a check like that on its own before changing anything — and do not
   discard a check's stderr, which is where the difference lives.
 
-Three consecutive full-workspace runs under ten CPU spinners pass — 358 tests,
-no failures — and they are the gate for any change to a harness.
+Three consecutive full-workspace runs under ten CPU spinners pass — the suite,
+which now stands at 362 tests, with no failures — and they are the gate for any
+change to a harness.
 
 ## Invariants with dedicated tests
 
@@ -90,7 +91,7 @@ no failures — and they are the gate for any change to a harness.
 
 ```sh
 export PATH=/opt/rust/bin:$PATH CARGO_HOME=/opt/cargo CARGO_NET_OFFLINE=true
-cargo test --workspace                                   # 358 tests
+cargo test --workspace                                   # 362 tests
 bash scripts/build-web.sh --check                        # artifact matches source
 node --test web/tests/format.test.mjs \
              web/tests/wallet-module.test.mjs \

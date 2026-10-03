@@ -20,44 +20,89 @@ pub struct Network {
     pub domain: &'static str,
     /// Whether this network issues real value (mainnet) or is for testing.
     pub is_mainnet: bool,
+    /// Default port for this network's node API.
+    ///
+    /// Distinct per network on purpose: an operator who runs a testnet beside a
+    /// mainnet node on one host must not have the second one fail to bind, and a
+    /// wallet pointed at `127.0.0.1` must not silently read the wrong chain's
+    /// node.  Every process takes an explicit flag too.
+    pub api_port: u16,
+    /// Default peer port for this network's node.
+    pub peer_port: u16,
+    /// Default port for this network's interface (`obs-app`).
+    pub interface_port: u16,
+    /// Default port for this network's registration service (`obs-gateway`).
+    pub service_port: u16,
+    /// A disposable invitation for this network's founder, when the network is a
+    /// development or test network (`None` on mainnet).
+    ///
+    /// These codes are published on purpose and are worth nothing: they exist so
+    /// that a testnetwork can be founded in one command without inventing an
+    /// invitation first.  Mainnet's genesis invitation has no value here and
+    /// never will — it is held by the operator, minted into the registration
+    /// service's store, and never written down in this repository.
+    pub disposable_invite: Option<&'static str>,
 }
 
-/// Obsidian mainnet.
+/// Obsidian mainnet — the network that carries value (chain id 1).
+///
+/// Its genesis invitation is the operator's: it authorises the one-time
+/// 100,000 OBS genesis allocation, so it is minted into the registration
+/// service's store and appears in no source file, page or log.
 pub const MAINNET: Network = Network {
     chain_id: 1,
     name: "mainnet",
     address_prefix: "obs",
     domain: "OBSIDIAN/MAINNET/v1",
     is_mainnet: true,
+    api_port: 8200,
+    peer_port: 9200,
+    interface_port: 8181,
+    service_port: 8180,
+    disposable_invite: None,
 };
 
-/// Public testnet.
+/// Obsidian testnet — public testing, disposable value (chain id 2).
 pub const TESTNET: Network = Network {
     chain_id: 2,
     name: "testnet",
     address_prefix: "tobs",
     domain: "OBSIDIAN/TESTNET/v1",
     is_mainnet: false,
+    api_port: 8300,
+    peer_port: 9300,
+    interface_port: 8182,
+    service_port: 8183,
+    disposable_invite: Some("OBS-TESTNET-FOUNDER-0001"),
 };
 
-/// Developer network.
+/// Obsidian devnet — local development, founded and thrown away freely (chain id 3).
 pub const DEVNET: Network = Network {
     chain_id: 3,
     name: "devnet",
     address_prefix: "dobs",
     domain: "OBSIDIAN/DEVNET/v1",
     is_mainnet: false,
+    api_port: 7200,
+    peer_port: 9220,
+    interface_port: 8081,
+    service_port: 8080,
+    disposable_invite: Some("OBS-DEVNET-FOUNDER-0001"),
 };
 
-/// Staging network.
+/// Obsidian staging — a production rehearsal on its own chain (chain id 4).
 pub const STAGING: Network = Network {
     chain_id: 4,
     name: "staging",
     address_prefix: "sobs",
     domain: "OBSIDIAN/STAGING/v1",
     is_mainnet: false,
+    api_port: 8400,
+    peer_port: 9400,
+    interface_port: 8184,
+    service_port: 8185,
+    disposable_invite: Some("OBS-STAGING-FOUNDER-0001"),
 };
-
 /// All supported networks.
 pub const ALL_NETWORKS: [Network; 4] = [MAINNET, TESTNET, DEVNET, STAGING];
 
@@ -112,6 +157,35 @@ mod tests {
                 assert_ne!(a.chain_id, b.chain_id);
                 assert_ne!(a.address_prefix, b.address_prefix);
                 assert_ne!(a.genesis_hash(1, 1_700_000_000), b.genesis_hash(1, 1_700_000_000));
+                assert_ne!(a.api_port, b.api_port);
+                assert_ne!(a.peer_port, b.peer_port);
+                assert_ne!(a.interface_port, b.interface_port);
+                assert_ne!(a.service_port, b.service_port);
+            }
+        }
+    }
+
+    #[test]
+    fn only_mainnet_carries_real_value_and_has_no_disposable_invite() {
+        assert!(MAINNET.is_mainnet);
+        assert_eq!(
+            MAINNET.disposable_invite, None,
+            "mainnet's genesis invitation is never a constant in this source"
+        );
+        for network in [TESTNET, DEVNET, STAGING] {
+            assert!(!network.is_mainnet);
+            let code = network.disposable_invite.expect("a test network is disposable");
+            assert!(code.contains(&network.name.to_uppercase()), "{code}");
+            assert!(code.len() >= 12, "the service refuses a code shorter than 12");
+        }
+        // Distinct from each other, and none of them is mainnet's shape.
+        let invites: Vec<&str> = [TESTNET, DEVNET, STAGING]
+            .iter()
+            .filter_map(|network| network.disposable_invite)
+            .collect();
+        for (i, a) in invites.iter().enumerate() {
+            for b in invites.iter().skip(i + 1) {
+                assert_ne!(a, b);
             }
         }
     }

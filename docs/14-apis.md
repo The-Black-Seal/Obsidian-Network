@@ -3,7 +3,7 @@
 Four surfaces, deliberately different in what they can do. Every one of them is
 read-only except for the three writes marked below, and none of them can sign.
 
-## Node API (`obs-node`, default port 7200)
+## Node API (`obs-node`; 7200 on devnet, 8200 on mainnet — see [Networks](16-networks-and-deployment.md#the-four-networks))
 
 | Method | Route | Returns |
 |--------|-------|---------|
@@ -56,7 +56,7 @@ inventing state:
 
 Refusals are canonical: `{"ok": false, "error": {"code": "...", "message": "..."}}`.
 
-## Application API (`obs-app`, default port 8081)
+## Application API (`obs-app`; 8081 on devnet, 8181 on mainnet)
 
 The Explorer and the Developer Portal, plus the node read-through.
 

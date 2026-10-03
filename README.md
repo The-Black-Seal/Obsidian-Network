@@ -51,18 +51,34 @@ One command brings up a whole network — a chain that mines, a validator that
 attests, and the interface — and prints what to open:
 
 ```sh
-bash scripts/devnet-quickstart.sh          # build if needed, start, verify
+bash scripts/quickstart.sh                 # a devnet: build if needed, start, verify
 #   devnet: the devnet is live.
 #   devnet:   open            http://127.0.0.1:8081
-bash scripts/devnet-quickstart.sh status   # height, peers, validators, supply
-bash scripts/devnet-quickstart.sh stop     # stop both processes, keep the chain
-bash scripts/devnet-quickstart.sh reset --yes   # delete it and start over
+bash scripts/quickstart.sh status          # height, peers, validators, supply
+bash scripts/quickstart.sh stop            # stop both processes, keep the chain
+bash scripts/quickstart.sh reset --yes     # delete it and start over
 ```
 
-It is idempotent: running it again resumes the devnet it finds instead of
+It is idempotent: running it again resumes the network it finds instead of
 founding a second chain, and the founder is registered once. Everything it
-creates lives under `--dir` (default `~/obsidian-devnet`): the authority key,
+creates lives under `--dir` (default `~/obsidian-<network>`): the authority key,
 the founder's keystore and phrase, the chain, and `node.log`.
+
+`--network` selects any of the four, and each network has its own ports and its
+own data directory, so several can run side by side on one machine:
+
+| `--network` | chain id | addresses | node API | peers | interface |
+|-------------|----------|-----------|----------|-------|-----------|
+| `mainnet`   | 1        | `obs1…`   | 8200     | 9200  | 8181      |
+| `testnet`   | 2        | `tobs1…`  | 8300     | 9300  | 8182      |
+| `staging`   | 4        | `sobs1…`  | 8400     | 9400  | 8184      |
+| `devnet`    | 3        | `dobs1…`  | 7200     | 9220  | 8081      |
+
+`obs-cli networks` prints the same table from the binaries themselves. A test
+network is founded with a published, disposable invitation; mainnet is not — its
+invitation authorises the genesis allocation on the network that carries value, so
+it is the operator's, and `scripts/quickstart.sh --network mainnet` refuses to run
+without `--invite-file`.
 
 The same thing by hand, if you want to see each step:
 
@@ -91,7 +107,7 @@ runtime. See [Deployment](docs/16-networks-and-deployment.md#termux-a-node-on-a-
 ## Verifying it
 
 ```sh
-cargo test --workspace                        # 358 Rust tests
+cargo test --workspace                        # 362 Rust tests
 bash scripts/build-web.sh --check             # the wasm artifact matches the source
 node --test web/tests/format.test.mjs \
              web/tests/wallet-module.test.mjs \

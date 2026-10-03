@@ -88,11 +88,11 @@ impl Context {
         Ok(Context {
             network,
             node_url: args
-                .or("node-url", "http://127.0.0.1:7200")
+                .or("node-url", &format!("http://127.0.0.1:{}", network.api_port))
                 .trim_end_matches('/')
                 .to_string(),
             gateway_url: args
-                .or("gateway-url", "http://127.0.0.1:8080")
+                .or("gateway-url", &format!("http://127.0.0.1:{}", network.service_port))
                 .trim_end_matches('/')
                 .to_string(),
             client: Client::with_timeout(Duration::from_secs(20)),
@@ -255,6 +255,13 @@ mod tests {
         assert_eq!(context.network.name, "devnet");
         assert_eq!(context.node_url, "http://127.0.0.1:7200");
         assert_eq!(context.gateway_url, "http://127.0.0.1:8080");
+
+        // A flag-free testnet context points at the testnet services, so a
+        // shell that set --network never reads the devnet node by accident.
+        let args = Args::parse("obs-cli", &argv(&["--network", "testnet"]), COMMON).unwrap();
+        let context = Context::from_args(&args).unwrap();
+        assert_eq!(context.node_url, "http://127.0.0.1:8300");
+        assert_eq!(context.gateway_url, "http://127.0.0.1:8183");
 
         let args = Args::parse(
             "obs-cli",

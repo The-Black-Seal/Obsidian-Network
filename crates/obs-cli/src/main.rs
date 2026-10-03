@@ -26,7 +26,9 @@ fn main() -> ExitCode {
     // A command's own options, plus the flags every command accepts.
     let options: Vec<&'static str> = match command.as_str() {
         "status" | "supply" | "mining" | "params" | "block" | "tx" | "blocks"
-        | "validators" | "mempool" | "peers" | "events" | "search" => network::OPTIONS.to_vec(),
+        | "validators" | "mempool" | "peers" | "events" | "search" | "networks" => {
+            network::OPTIONS.to_vec()
+        }
         "wallet" | "balance" | "claim" | "send" | "validator" | "recover" => wallet::OPTIONS.to_vec(),
         "register" | "sign-in" | "account" | "invite" => register::OPTIONS.to_vec(),
         "devnet" => devnet::OPTIONS.to_vec(),
@@ -62,6 +64,7 @@ fn main() -> ExitCode {
 
     let outcome = match (command.as_str(), sub(&argv)) {
         // Network: read what the node reports.
+        ("networks", _) => network::networks(),
         ("status", _) => network::status(&context),
         ("supply", _) => network::supply(&context),
         ("mining", _) => network::mining(&context),
@@ -171,6 +174,7 @@ fn usage() -> String {
 Usage: obs-cli <command> [subcommand] [options]
 
 Read the network
+  networks                   the four networks, their ports and their founders' invitations
   status                     the node's summary: height, head, protocol time, supply
   supply                     issuance: maximum, issued, pools, remaining
   mining                     the reward for the next claim and who is active
@@ -203,7 +207,8 @@ Account registration (six steps, no email code)
   invite issue --session-out <file>        spend one of your five invitations
 
 Operator
-  devnet init --data-dir <dir> [--keystore <file>] [--password-file <file>]
+  devnet init --data-dir <dir> [--keystore <file>] [--password-file <file>] \
+              [--invite <code>] [--gmail <a@gmail.com>]
   devnet register --data-dir <dir> [--keystore <file>] [--password-file <file>]
   devnet expect-genesis
   authority generate --authority-key <file>
@@ -213,8 +218,8 @@ Operator
 
 Common options
   --network <devnet|testnet|staging|mainnet>   default devnet
-  --node-url <url>                             default http://127.0.0.1:7200
-  --gateway-url <url>                          default http://127.0.0.1:8080
+  --node-url <url>                             default: this network's node API
+  --gateway-url <url>                          default: this network's service
   --password-file <path>                       keystore password (or OBS_WALLET_PASSWORD)
 
 A password is never taken as an argument, and a recovery phrase is never printed

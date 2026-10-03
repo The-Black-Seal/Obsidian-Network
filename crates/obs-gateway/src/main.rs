@@ -34,6 +34,7 @@ use obs_rpc::cli::Args;
 use obs_rpc::server::{Server, ServerConfig};
 
 const KNOWN: &[&str] = &[
+    "bind",
     "network",
     "store",
     "authority-key",
@@ -47,7 +48,28 @@ const KNOWN: &[&str] = &[
     "help!",
 ];
 
+/// Where a service listens.
+///
+/// `0.0.0.0` is the default because a node or an interface is usually reached
+/// from another machine; a deployment that puts a TLS terminator in front of a
+/// service binds it to `127.0.0.1` instead, so the port is not reachable from
+/// the network at all.  An address that does not parse is refused rather than
+/// handed to the socket layer, because a mistyped bind address that silently
+/// became "every interface" is a security bug, not a typo.
+fn bind_address(args: &Args, default: &str) -> Result<String, String> {
+    let given = args.or("bind", default);
+    match given.trim().parse::<std::net::IpAddr>() {
+        Ok(address) => Ok(address.to_string()),
+        Err(_) => Err(format!(
+            "--bind {:?} is not an IP address; use 127.0.0.1 to keep this port local, or \
+             0.0.0.0 to accept connections from the network",
+            given
+        )),
+    }
+}
+
 fn usage() -> String {
+
     "obs-gateway — the Obsidian Network registration service
 
 Usage: obs-gateway [options]
@@ -57,7 +79,10 @@ Usage: obs-gateway [options]
   --authority-key <path>      the invitation-authority key file (default ./data/<network>/authority.key)
   --service-key <hex32>       key that seals TOTP secrets at rest
                               (default: derived from the authority key file)
-  --port <n>                  listen port (default 8080)
+  --bind <ip>                 address to listen on (default 0.0.0.0; use
+                              127.0.0.1 when a TLS proxy is in front)
+  --port <n>                  listen port (default per network: mainnet 8180,
+                              testnet 8183, staging 8185, devnet 8080)
 
   --generate-authority        create the authority key file and exit
   --print-authority           print the authority's public key and exit
@@ -240,7 +265,14 @@ fn main() -> ExitCode {
     }
 
     // --- the service ------------------------------------------------------
-    let port = match args.port("port", 8080) {
+    let bind = match bind_address(&args, "0.0.0.0") {
+        Ok(bind) => bind,
+        Err(error) => {
+            eprintln!("obs-gateway: {}", error);
+            return ExitCode::from(2);
+        }
+    };
+    let port = match args.port("port", network.service_port) {
         Ok(port) => port,
         Err(error) => {
             eprintln!("obs-gateway: {}", error);
@@ -266,12 +298,12 @@ fn main() -> ExitCode {
             .unwrap_or_else(|_| "(unavailable)".to_string())
     );
     println!("obs-gateway: accounts      {}", registry.lock().map(|r| r.account_count()).unwrap_or(0));
-    println!("obs-gateway: listening     http://0.0.0.0:{}", port);
+    println!("obs-gateway: listening     http://{}:{}", bind, port);
     println!("obs-gateway: flow          gmail → password → invite → recovery code → mfa → wallet → activated");
     println!("obs-gateway: secrets are hashed at rest; recovery and invitation codes are shown once");
 
     let shutdown = Arc::new(AtomicBool::new(false));
-    let server = match Server::bind(("0.0.0.0", port), ServerConfig::default()) {
+    let server = match Server::bind((bind.as_str(), port), ServerConfig::default()) {
         Ok(server) => server,
         Err(error) => {
             eprintln!("obs-gateway: the service could not bind port {}: {}", port, error);

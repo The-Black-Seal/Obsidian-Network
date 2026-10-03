@@ -36,6 +36,7 @@ use obs_rpc::cli::Args;
 use obs_rpc::server::{Server, ServerConfig};
 
 const KNOWN: &[&str] = &[
+    "bind",
     "network",
     "port",
     "node-url",
@@ -52,15 +53,39 @@ const KNOWN: &[&str] = &[
     "help!",
 ];
 
+/// Where a service listens.
+///
+/// `0.0.0.0` is the default because a node or an interface is usually reached
+/// from another machine; a deployment that puts a TLS terminator in front of a
+/// service binds it to `127.0.0.1` instead, so the port is not reachable from
+/// the network at all.  An address that does not parse is refused rather than
+/// handed to the socket layer, because a mistyped bind address that silently
+/// became "every interface" is a security bug, not a typo.
+fn bind_address(args: &Args, default: &str) -> Result<String, String> {
+    let given = args.or("bind", default);
+    match given.trim().parse::<std::net::IpAddr>() {
+        Ok(address) => Ok(address.to_string()),
+        Err(_) => Err(format!(
+            "--bind {:?} is not an IP address; use 127.0.0.1 to keep this port local, or \
+             0.0.0.0 to accept connections from the network",
+            given
+        )),
+    }
+}
+
 fn usage() -> String {
+
     format!(
         "obs-app — the Obsidian Network Explorer and Developer Portal
 
 Usage: obs-app [options]
 
   --network <name>       devnet (default), testnet, staging, mainnet
-  --node-url <url>       the node to index (default http://127.0.0.1:7200)
-  --port <n>             listen port (default 8081)
+  --node-url <url>       the node to index (default this network's API port)
+  --bind <ip>            address to listen on (default 0.0.0.0; use 127.0.0.1
+                         when a TLS proxy or tunnel is in front)
+  --port <n>             listen port (default per network: mainnet 8181,
+                         testnet 8182, staging 8184, devnet 8081)
   --store <path>         developer-portal store (default ./data/<network>/portal.json)
   --static-dir <path>    serve the web interface from here
   --logo-source <url>    fetch the official logo from this URL, server-side
@@ -153,7 +178,14 @@ fn main() -> ExitCode {
         }
     };
     let default_dir = format!("data/{}", network.name);
-    let port = match args.port("port", 8081) {
+    let bind = match bind_address(&args, "0.0.0.0") {
+        Ok(bind) => bind,
+        Err(error) => {
+            eprintln!("obs-app: {}", error);
+            return ExitCode::from(2);
+        }
+    };
+    let port = match args.port("port", network.interface_port) {
         Ok(port) => port,
         Err(error) => {
             eprintln!("obs-app: {}", error);
@@ -167,7 +199,10 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let node_url = args.or("node-url", "http://127.0.0.1:7200");
+    let node_url = args.or(
+        "node-url",
+        &format!("http://127.0.0.1:{}", network.api_port),
+    );
     let portal_path = match args.path("store", Some(&format!("{}/portal.json", default_dir))) {
         Ok(path) => path,
         Err(error) => {
@@ -339,10 +374,10 @@ fn main() -> ExitCode {
             _ => "none; the interface uses its drawn mark".to_string(),
         }
     );
-    println!("obs-app: listening       http://0.0.0.0:{}", port);
+    println!("obs-app: listening       http://{}:{}", bind, port);
     println!("obs-app: routes          {} public routes; none returns a balance", ROUTES.len());
 
-    let server = match Server::bind(("0.0.0.0", port), ServerConfig::default()) {
+    let server = match Server::bind((bind.as_str(), port), ServerConfig::default()) {
         Ok(server) => server,
         Err(error) => {
             eprintln!("obs-app: could not bind port {}: {}", port, error);

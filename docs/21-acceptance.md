@@ -1,6 +1,6 @@
 # 21 — Acceptance
 
-The acceptance run is `scripts/acceptance.sh`: **100 numbered checks** over the
+The acceptance run is `scripts/acceptance.sh`: **101 numbered checks** over the
 whole system. It exits non-zero if any check fails, so it is a gate, not a report.
 Half the checks read the live deployment over HTTP exactly as a person or a wallet
 would; the other half are the source-level and test-suite gates that prove the
@@ -16,17 +16,20 @@ bash scripts/acceptance.sh
 ```
 Obsidian Network — acceptance run
 interface: http://127.0.0.1:8081   node: http://127.0.0.1:7200
-checks: 100   passed: 100   failed: 0
+checks: 101   passed: 101   failed: 0
 all checks passed
 ```
 
-Deployment under test: devnet (chain id 3), node at height ~1,900, obs-app
-serving the interface, the explorer and the portal on one origin, with the real
-compiled wallet module at `web/wasm/obsidian-wallet.wasm`.
+Deployment under test: devnet (chain id 3) founded by `scripts/quickstart.sh`,
+node at height ~100, obs-app serving the interface, the explorer and the portal
+on one origin, with the real compiled wallet module at
+`web/wasm/obsidian-wallet.wasm`. Two further networks — testnet on 8300/9300/8182
+and staging on 8400/9400/8184 — were running on the same host at the same time
+from the same checkout, which is what check 101 exists to pin down.
 
-Rust suite: 353 passed, 0 failed. JavaScript suite: 15 passed, 0 failed.
+Rust suite: 362 passed, 0 failed. JavaScript suite: 15 passed, 0 failed.
 
-## The 100 checks
+## The 101 checks
 
 | # | Check | Result |
 |---|-------|--------|
@@ -130,11 +133,25 @@ Rust suite: 353 passed, 0 failed. JavaScript suite: 15 passed, 0 failed.
 | 98 | the full Rust suite passes | pass |
 | 99 | the full JavaScript suite passes | pass |
 | 100 | no private key, seed phrase, genesis invitation or logo source is in the tree | pass |
+| 101 | the four networks have their own ports and only test networks publish an invitation | pass |
 
 ## What the run found
 
 Fourteen defects were found by running it, and all fourteen are fixed — which is
-the point of having it:
+the point of having it. A later audit found a fifteenth, a gap rather than a
+wrong answer: three networks could not share a host, because every program
+defaulted to the devnet's ports and the four default data directories overlapped
+(`data/devnet`, `data/testnet`, … were right, but two nodes on one machine still
+fought over 7200). The ports are now per network — 8200/9200/8181/8180 for
+mainnet, 8300/9300/8182/8183 for testnet, 7200/9220/8081/8080 for devnet,
+8400/9400/8184/8185 for staging — the defaults come from
+`obs_primitives::network`, `obs-cli networks` prints them, and check 101 holds
+them. The same audit closed a second gap: `devnet init` would happily found a
+network called mainnet with a *published* invitation, so mainnet now has no
+default invitation at all and requires the operator's own (`--invite`), which is
+the only thing that can authorise the genesis allocation on a network carrying
+real value:
+
 
 1. **The interface did not boot.** The page's shell never painted: the app
    registers its `DOMContentLoaded` handler on `window`, and the test's DOM shim

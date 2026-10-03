@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# The acceptance run: 100 numbered checks over the whole system.
+# The acceptance run: 101 numbered checks over the whole system.
 #
 # Half of these are greps and unit-level gates that need nothing running; the
 # other half drive a live devnet over HTTP, exactly as a person or a wallet
@@ -404,6 +404,22 @@ check 99 "the full JavaScript suite passes" \
 # shape, because searching for that host by name would put the host here.
 check 100 "no private key, seed phrase, genesis invitation or logo source is in the tree" \
     bash scripts/leak-check.sh >/dev/null
+
+# ---------------------------------------------------------------------------
+section "Networks (101)"
+# ---------------------------------------------------------------------------
+
+# The four networks share a host without sharing a port, and only the three test
+# networks publish a founder invitation: mainnet's is the operator's, and the
+# `networks` table is where that difference is visible from a shell.
+check 101 "the four networks have their own ports and only test networks publish an invitation" \
+    bash -c './target/debug/obs-cli networks > /tmp/obs-networks.txt
+        grep -q "8200" /tmp/obs-networks.txt && grep -q "8300" /tmp/obs-networks.txt &&
+        grep -q "8400" /tmp/obs-networks.txt && grep -q "7200" /tmp/obs-networks.txt &&
+        grep -q "OBS-DEVNET-FOUNDER-0001" /tmp/obs-networks.txt &&
+        ! grep -q "OBS-GENESIS" /tmp/obs-networks.txt &&
+        mainnet_line="$(grep "^mainnet" /tmp/obs-networks.txt | grep operator)" &&
+        [ -n "$mainnet_line" ]'
 
 # ---------------------------------------------------------------------------
 

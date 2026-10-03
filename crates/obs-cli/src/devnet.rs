@@ -28,6 +28,7 @@ use std::path::PathBuf;
 
 use obs_chain::{Transaction, TxKind};
 use obs_primitives::identity::canonical_gmail;
+use obs_primitives::network::Network;
 use obs_primitives::json::Json;
 use obs_rpc::cli::Args;
 
@@ -52,7 +53,38 @@ pub const OPTIONS: &[&'static str] = &[
 /// A devnet is disposable and its Gmail identity is a placeholder — no mail is
 /// ever sent anywhere, and no real person's address is involved.
 const DEVNET_GMAIL: &str = "devnet.founder.obsidian@gmail.com";
-const DEVNET_INVITE: &str = "OBS-DEVNET-FOUNDER-0001";
+
+/// The invitation that founds `network` when the operator names none.
+///
+/// A development or test network ships with a published, disposable code (see
+/// [`Network::disposable_invite`]) so that a chain can be founded in one
+/// command; the code is worth nothing and says so in its name.  Mainnet has no
+/// default: its first invitation authorises the genesis allocation on the
+/// network that carries real value, so the operator holds it, mints it into the
+/// registration service's own store, and it never appears in this source, in a
+/// log or on this command line unless the operator puts it there.
+fn founder_invite(network: Network, args: &Args) -> Result<String, CliError> {
+    match args.get("invite") {
+        Some(given) if !given.trim().is_empty() => return Ok(given.trim().to_string()),
+        // A blank code is not "no code": it is a slip.  Refuse it here rather
+        // than hand an empty invitation to the node, where it could only fail
+        // after a wallet has been created.
+        Some(_) => {
+            return Err(CliError::Usage(
+                "--invite is blank; an empty invitation authorises nothing".to_string(),
+            ))
+        }
+        None => {}
+    }
+    network.disposable_invite.map(str::to_string).ok_or_else(|| {
+        CliError::Usage(
+            "--invite is required on mainnet: its genesis invitation is held by the operator \
+             (mint it with `obs-cli invite mint --genesis --store <file>`) and is never a \
+             default here"
+                .to_string(),
+        )
+    })
+}
 
 /// Options for `devnet init`.
 pub fn init(context: &Context, args: &Args) -> Result<(), CliError> {
@@ -115,7 +147,7 @@ pub fn init(context: &Context, args: &Args) -> Result<(), CliError> {
     let gmail = args.or("gmail", DEVNET_GMAIL);
     let canonical = canonical_gmail(&gmail)
         .map_err(|error| CliError::Usage(format!("--gmail: {}", error)))?;
-    let invite_code = args.or("invite", DEVNET_INVITE);
+    let invite_code = founder_invite(context.network, args)?;
 
     // --- what the node needs to start mining as the founder ----------------
     // The node's identity is the wallet's *node* key and its mining key is the
@@ -340,7 +372,7 @@ pub fn register(context: &Context, args: &Args) -> Result<(), CliError> {
         .map_err(|error| CliError::Failed(error.to_string()))?;
     let canonical = canonical_gmail(&args.or("gmail", DEVNET_GMAIL))
         .map_err(|error| CliError::Usage(format!("--gmail: {}", error)))?;
-    let invite_code = args.or("invite", DEVNET_INVITE);
+    let invite_code = founder_invite(context.network, args)?;
     match register_founder(context, args, &wallet, &authority, &invite_code, &canonical)? {
         Some(id) => println!("obs-cli: founder {} is registered ({})", wallet.address(), id),
         None => {
@@ -352,4 +384,47 @@ pub fn register(context: &Context, args: &Args) -> Result<(), CliError> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use obs_rpc::cli::Args;
+
+    fn args(flags: &[&str]) -> Args {
+        let argv: Vec<String> = flags.iter().map(|flag| flag.to_string()).collect();
+        Args::parse("obs-cli", &argv, &["invite", "gmail"]).expect("parse")
+    }
+
+    #[test]
+    fn a_test_network_falls_back_to_its_published_invitation() {
+        for network in obs_primitives::network::ALL_NETWORKS {
+            match network.disposable_invite {
+                Some(published) => {
+                    let code = founder_invite(network, &args(&[])).expect("a default");
+                    assert_eq!(code, published);
+                }
+                // Mainnet is the one network with no published fallback; the
+                // test below is the one that pins that down.
+                None => assert!(founder_invite(network, &args(&[])).is_err()),
+            }
+        }
+    }
+
+    #[test]
+    fn mainnet_needs_the_operators_invitation_and_refuses_a_blank_one() {
+        let mainnet = obs_primitives::network::MAINNET;
+        let error = founder_invite(mainnet, &args(&[])).expect_err("no default on mainnet");
+        assert!(
+            error.to_string().contains("--invite is required on mainnet"),
+            "{}",
+            error
+        );
+        let error = founder_invite(mainnet, &args(&["--invite", "   "])).expect_err("blank");
+        assert!(error.to_string().contains("blank"), "{}", error);
+        // The operator's own code is passed through untouched: this program
+        // neither mints it nor records it.
+        let code = founder_invite(mainnet, &args(&["--invite", "OBS-OPERATOR-ONE"])).expect("given");
+        assert_eq!(code, "OBS-OPERATOR-ONE");
+    }
 }

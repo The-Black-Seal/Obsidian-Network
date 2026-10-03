@@ -2,12 +2,18 @@
 
 ## The four networks
 
-| Network | Chain id | Namespace | Genesis invite | Purpose |
-|---------|----------|-----------|----------------|---------|
-| mainnet | 1 | `obs1…` | one, single use, never published | real value |
-| testnet | 2 | `tobs1…` | disposable | public testing |
-| devnet | 3 | `dobs1…` | disposable, created by tooling | development |
-| staging | 4 | `sobs1…` | disposable | production rehearsal |
+| Network | Chain id | Namespace | Node API | Peers | Interface | Service | Genesis invite | Purpose |
+|---------|----------|-----------|----------|-------|-----------|---------|----------------|---------|
+| mainnet | 1 | `obs1…` | 8200 | 9200 | 8181 | 8180 | one, single use, never published | real value |
+| testnet | 2 | `tobs1…` | 8300 | 9300 | 8182 | 8183 | disposable | public testing |
+| devnet | 3 | `dobs1…` | 7200 | 9220 | 8081 | 8080 | disposable, created by tooling | development |
+| staging | 4 | `sobs1…` | 8400 | 9400 | 8184 | 8185 | disposable | production rehearsal |
+
+The ports are constants in `obs_primitives::network` and are the default each
+binary takes when the flag is absent, so four networks can run on one machine
+without a port being passed by hand and without a wallet pointed at `127.0.0.1`
+reading the wrong chain's node. `obs-cli networks` prints the table from the
+binaries themselves. Everything binds above 1024: no root is needed anywhere.
 
 Each network has its own chain id, genesis timestamp, database directory,
 authority key and service key. The genesis parameters are public — a joiner
@@ -19,12 +25,12 @@ outright — so a testnet transaction can never be replayed on mainnet.
 
 ## What to run
 
-| Service | Binary | Typical port | Job |
-|---------|--------|--------------|-----|
-| Node | `obs-node` | 7200 API / 9200 peers | consensus, state, mining, the node API |
-| Registration | `obs-gateway` | 7300 | accounts, invitations, MFA, sessions |
+| Service | Binary | Port (devnet defaults) | Job |
+|---------|--------|------------------------|-----|
+| Node | `obs-node` | 7200 API / 9220 peers | consensus, state, mining, the node API |
+| Registration | `obs-gateway` | 8080 | accounts, invitations, MFA, sessions |
 | Application | `obs-app` | 8081 | Explorer API, indexer, portal, static interface, node read-through |
-| Tooling | `obs-cli` | — | keys, wallets, devnet bootstrap, operator tasks |
+| Tooling | `obs-cli` | — | keys, wallets, network bootstrap, operator tasks |
 
 A node needs an authority key (to recognise invitations), and either a keystore
 or a wallet password to propose. `obs-app` needs the authority key only if it
@@ -65,6 +71,80 @@ password (all `0600` except the phrase, which is `0600` too). It needs no runnin
 node; `devnet register` submits the founding registration and is safe to re-run.
 The first block carries that registration and the founder's first claim — the
 genesis claim.
+
+## Each network, by hand
+
+The quickstart wraps these; running them by hand is what a service unit, a
+container or a supervisor does. Only the network name and the ports change
+between them — the shape is identical, which is the point of the port table
+above. `<DIR>` is one directory per network (`/var/lib/obsidian/<network>` on a
+server, `$HOME/obsidian-<network>` on a phone).
+
+Found the network once, from the operator's account. A test network takes its
+disposable invitation (printed by `obs-cli networks`); mainnet takes
+`--invite <the operator's own code>`, which is written in no file of this
+repository and belongs in a `0600` one of the operator's:
+
+```sh
+obs-cli networks                                          # the four networks and their ports
+obs-cli devnet init --network devnet  --data-dir <DIR> --password-file <DIR>/password.txt
+obs-cli devnet init --network testnet --data-dir <DIR> --password-file <DIR>/password.txt
+obs-cli devnet init --network staging --data-dir <DIR> --password-file <DIR>/password.txt
+obs-cli devnet init --network mainnet --data-dir <DIR> --password-file <DIR>/password.txt \
+    --invite "$(cat <DIR>/genesis-invite.txt)"            # the operator's, never published
+```
+
+Then the node — mining and attesting, which is what advances protocol time:
+
+```sh
+# mainnet: node API 8200, peers 9200, interface 8181, service 8180
+obs-node --network mainnet  --data-dir <DIR>/node --genesis-timestamp now --fsync \
+    --authority-key <64 hex> --keystore <DIR>/founder.keystore.json \
+    --keystore-password-file <DIR>/password.txt --mine --validator
+obs-node --network testnet  --data-dir <DIR>/node --genesis-timestamp now --fsync \
+    --authority-key <64 hex> --keystore <DIR>/founder.keystore.json \
+    --keystore-password-file <DIR>/password.txt --mine --validator
+obs-node --network staging  --data-dir <DIR>/node --genesis-timestamp now --fsync \
+    --authority-key <64 hex> --keystore <DIR>/founder.keystore.json \
+    --keystore-password-file <DIR>/password.txt --mine --validator
+obs-node --network devnet   --data-dir <DIR>/node --genesis-timestamp now --fsync \
+    --authority-key <64 hex> --keystore <DIR>/founder.keystore.json \
+    --keystore-password-file <DIR>/password.txt --mine --validator
+```
+
+and the interface, which serves the Explorer, the wallet and the developer
+portal from the same origin:
+
+```sh
+obs-app --network mainnet --port 8181 --node-url http://127.0.0.1:8200 \
+    --static-dir web --store <DIR>/index.json
+obs-app --network testnet --port 8182 --node-url http://127.0.0.1:8300 \
+    --static-dir web --store <DIR>/index.json
+obs-app --network staging --port 8184 --node-url http://127.0.0.1:8400 \
+    --static-dir web --store <DIR>/index.json
+obs-app --network devnet  --port 8081 --node-url http://127.0.0.1:7200 \
+    --static-dir web --store <DIR>/index.json
+```
+
+Registration — `--accounts` on the application, or the service on its own port —
+is required for anyone but the founder to exist, and on mainnet it is how real
+accounts are created:
+
+```sh
+obs-gateway --network mainnet --port 8180 --authority-key <DIR>/authority.key \
+    --store <DIR>/accounts.json --node-url http://127.0.0.1:8200
+```
+
+`--genesis-timestamp now` founds a chain in a directory that has none; a
+directory that already holds a chain keeps it, so a restart can never silently
+re-found a network. A node joining a network it did not found takes the epoch
+from the operator and names a peer instead:
+
+```sh
+obs-node --network mainnet --data-dir <DIR>/node \
+    --genesis-timestamp <the epoch from the operator's /api/v1/status> \
+    --peer <host>:9200 --fsync
+```
 
 ## Deployment topology
 
@@ -117,8 +197,13 @@ git clone -b arena/01a0fe6f-obsidian-network \
     https://github.com/The-Black-Seal/Obsidian-Network.git
 cd Obsidian-Network
 termux-wake-lock                          # keep it alive while you test
-bash scripts/devnet-quickstart.sh         # build (minutes), start, verify
+bash scripts/quickstart.sh                # build (minutes), start, verify
 ```
+
+That is a devnet. `--network testnet` or `--network staging` does the same for
+those, on their own ports, beside the devnet rather than instead of it; the
+compatibility name `scripts/devnet-quickstart.sh` is the same script pinned to
+`--network devnet`.
 
 Then open the printed URL (`http://127.0.0.1:8081`) in the phone's browser. The
 first build is the long part — a few minutes of CPU on a phone; every start
@@ -141,20 +226,208 @@ after that is seconds.
   fine for a disposable chain and is never how a real network is run — mainnet
   keys belong on `0600` files the operator owns, and a real account is created
   through the registration service with a real invitation.
-* **Updating.** `git pull` and re-run `scripts/devnet-quickstart.sh`: the build is
+* **Updating.** `git pull` and re-run `scripts/quickstart.sh`: the build is
   incremental, and a running devnet resumes the chain it has (its genesis record
   wins over any flag, so a restart cannot silently re-found it).
+
+## Oracle Cloud: a public node in the free tier
+
+Oracle's Always Free tier is the cheapest way to put the network on a public IP,
+and it is a good fit for a PoT node: proof of time is not hash-rate competition,
+so a small ARM instance is not "too slow to mine" — it is a full node, a
+validator and an interface on 2 cores that would be idle under any proof of work.
+
+**What the free tier actually is** (Oracle's *Always Free Resources* page, which
+is the authority for this and the one to re-read when it changes):
+
+| Resource | Always Free |
+|----------|-------------|
+| `VM.Standard.A1.Flex` (Ampere, Arm) | 2 OCPUs and 12 GB RAM, splittable across up to two instances |
+| AMD micro instances | 2 × `VM.Standard.E2.1.Micro` (1/8 OCPU, 1 GB each) |
+| Block storage | 200 GB total (boot volumes count; 47 GB minimum each) |
+| Outbound transfer | 10 TB per month |
+| Load balancer | 1 flexible, 10 Mbps |
+| Signup | a card for identity verification; Always Free resources are not charged |
+
+Paid, on-demand prices for the same shape are around **$0.01 per OCPU-hour plus
+$0.0015 per GB-hour** — roughly $14/month for 1 OCPU and 6 GB, $28/month for 2
+and 12, $56/month for 4 and 24. The console's own estimate, in your region and
+currency, is the number to trust; the free allowance is a tenancy-wide monthly
+pool (about 3,000 OCPU-hours and 18,000 GB-hours), so a 4-OCPU instance that runs
+all month consumes more than the Always Free entitlement and starts to bill.
+
+**The reclaim rule people trip over.** Oracle may reclaim an idle Always Free
+instance when, over a 7-day window, the 95th-percentile CPU use is under 20 %,
+network use is under 20 %, and (on A1) memory use is under 20 %. A quiet chain is
+exactly that: consensus work here is time, not hashing, so an idle validator can
+look idle to Oracle. If the node is meant to be permanent, either run the
+interface on the same instance and poll it (the indexer and the interface keep
+the box visibly busy), or pay for a small instance and stop worrying about it.
+The free tier is best for a testnet or staging node; mainnet validators should be
+paid, monitored, and more than one.
+
+### 1. The instance
+
+Create an Ubuntu 24.04 (Arm) instance, shape `VM.Standard.A1.Flex`, 2 OCPU /
+12 GB, 100 GB boot volume, with your SSH public key. Note the public IP.
+
+### 2. Two firewalls, not one
+
+Oracle has a network-level security list and the image has its own `iptables`
+rules, and **both must allow a port** before a packet arrives. The image also
+disables `ufw` and ships a `REJECT` rule, so opening the console alone changes
+nothing — this is the single most common "the port is open but it is not open".
+
+In the console: *Networking → Virtual Cloud Networks → your VCN → Security Lists
+→ Default Security List → Add Ingress Rules*. Open 80 and 443 from `0.0.0.0/0`
+for the interface, and 9200 **only from the other nodes' addresses** — a peer
+port is not a public API, it is a consensus connection.
+
+On the instance, insert the same rules above the reject rule and persist them:
+
+```sh
+sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 80 -j ACCEPT
+sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 443 -j ACCEPT
+sudo iptables -L INPUT --line-numbers        # the ACCEPTs sit above the REJECT
+sudo netfilter-persistent save               # or: sudo iptables-save > /etc/iptables/rules.v4
+```
+
+### 3. Build from source
+
+There is one build system and it is `cargo`; the workspace has no third-party
+crates, so the build needs no package registry.
+
+```sh
+sudo apt update && sudo apt install -y build-essential curl git
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+. "$HOME/.cargo/env"
+cd "$HOME" && git clone https://github.com/The-Black-Seal/Obsidian-Network.git
+cd Obsidian-Network && git checkout arena/01a0fe6f-obsidian-network
+cargo build --workspace --release       # a couple of minutes on 2 Arm cores
+bash scripts/build-web.sh               # the wallet module for the interface
+```
+
+The checkout pins Rust 1.88.0 in `rust-toolchain.toml`, so `rustup` fetches the
+toolchain the release was built and tested with rather than whatever is newest.
+
+### 4. Run it under systemd
+
+Everything the quickstart prints by hand belongs in a unit file on a server. One
+account, one directory, two services:
+
+```sh
+sudo useradd --system --home /var/lib/obsidian --create-home obsidian
+sudo -u obsidian bash scripts/quickstart.sh start --network testnet --dir /var/lib/obsidian/testnet
+```
+
+```ini
+# /etc/systemd/system/obs-node.service
+[Unit]
+Description=Obsidian Network node (testnet)
+After=network-online.target
+
+[Service]
+User=obsidian
+WorkingDirectory=/opt/obsidian
+ExecStart=/opt/obsidian/target/release/obs-node --network testnet \
+    --data-dir /var/lib/obsidian/testnet/node --bind 127.0.0.1 \
+    --api-port 8300 --listen-port 9300 --fsync --mine --validator \
+    --authority-key <64 hex from: obs-cli authority print --authority-key <file>> \
+    --keystore /var/lib/obsidian/testnet/founder.keystore.json \
+    --keystore-password-file /var/lib/obsidian/testnet/founder.password.txt
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ReadWritePaths=/var/lib/obsidian/testnet
+[Install]
+WantedBy=multi-user.target
+```
+
+```ini
+# /etc/systemd/system/obs-app.service
+[Unit]
+Description=Obsidian Network interface (testnet)
+After=obs-node.service
+
+[Service]
+User=obsidian
+WorkingDirectory=/opt/obsidian
+ExecStart=/opt/obsidian/target/release/obs-app --network testnet --bind 127.0.0.1 \
+    --port 8182 --node-url http://127.0.0.1:8300 --static-dir /opt/obsidian/web \
+    --store /var/lib/obsidian/testnet/index.json --accounts \
+    --accounts-store /var/lib/obsidian/testnet/accounts.json \
+    --authority-key /var/lib/obsidian/testnet/authority.key
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ReadWritePaths=/var/lib/obsidian/testnet
+[Install]
+WantedBy=multi-user.target
+```
+
+`--bind 127.0.0.1` is the reason the units above do not simply expose 8300 and
+8182 to the internet: the only port the world should reach is the one a TLS
+proxy owns. `--bind` refuses an address it cannot parse, so a typo cannot
+silently become "listen everywhere".
+
+### 5. TLS in front of it
+
+The interface and the gateway are plain HTTP on purpose: they are behind a
+terminator that owns the certificate and the domain. Caddy is the shortest path
+(one file, automatic certificates, automatic renewal):
+
+```
+obsidian.example.org {
+    reverse_proxy 127.0.0.1:8182
+}
+```
+
+```sh
+sudo systemctl reload caddy     # after the Caddyfile change
+curl -s https://obsidian.example.org/api/v1/status
+```
+
+nginx with `certbot --nginx` is the same arrangement. Keep the interface port on
+loopback, keep 80/443 open in **both** firewalls from step 2, and let the proxy
+do the TLS.
+
+### 6. Running a node worth trusting
+
+* **Peers.** `--peer <host>:9300` for each known node, one flag each time. A node
+  with no peers still mines; it just has no one to compare notes with.
+* **Joining, not founding.** A node that did not found the network takes the
+  epoch from the operator and names a peer — `--genesis-timestamp <epoch>` with
+  no `--mine` or `--validator` for a follower. A data directory that already
+  holds a chain keeps it, so a restart can never re-found a network.
+* **Backups.** The data directory plus the keystore, the authority key and the
+  invitation file are the node. The recovery phrase belongs offline, on paper or
+  metal, not on the machine that mines.
+* **Monitoring.** `obs-cli status --network testnet --node-url http://127.0.0.1:8300`,
+  `journalctl -u obs-node -f`, and the supply endpoint for issuance drift. A node
+  whose height stops moving while `protocol_time` moves is a node that is not
+  being selected — check `peers`, then `validators`.
+* **Secrets.** `bash scripts/leak-check.sh` before every push; it fails on a
+  private key, a genesis invitation or a logo origin in the tree. A server that
+  has ever held the mainnet invitation and a public repository do not mix.
 
 ## Configuration that matters
 
 | Where | Setting | Why |
 |-------|---------|-----|
+| node | `--bind` | which address the API answers on: `0.0.0.0` (default) or `127.0.0.1` behind a proxy |
 | node | `--data-dir` | chain state and blocks; one directory per network |
 | node | `--authority-key` | which invitation authorities this chain trusts |
 | node | `--genesis-file` | a recorded `<network>-genesis`, for joining a network this node did not found |
 | node | `--genesis-timestamp` | the network's epoch — `now` when founding, the value from `/api/v1/status` when joining |
 | node | `--keystore` / `OBS_WALLET_PASSWORD` | the key that proposes and claims |
 | node | `--mine`, `--validator` | whether this node proposes and attests |
+| app | `--bind` | `127.0.0.1` when a TLS terminator is in front, `0.0.0.0` when it is not |
 | app | `--node-url` | which node it follows |
 | app | `--require-key` | refuse anonymous readers on the explorer routes |
 | app | `--store`, `--accounts-store` | the portal's keys and the account registry |

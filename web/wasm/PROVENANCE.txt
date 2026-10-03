@@ -1,7 +1,7 @@
 Built from crates/obs-wasm by scripts/build-web.sh.
 Target: wasm32-unknown-unknown
-Size:   283352 bytes
-SHA-256: ba1230ac6a19d3ee2d262b01e01ebaa4de1191c24ad5550756f18c885243a51f
+Size:   284497 bytes
+SHA-256: 8887b02ce42ee7e2011a7c0ec58f8e6d0cac1ed38855361cc92c9177dc196f9f
 
 This is a compiled artifact committed so that the interface works on a
 checkout with no toolchain.  Rebuild it with scripts/build-web.sh; the

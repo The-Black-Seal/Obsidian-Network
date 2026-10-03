@@ -39,6 +39,7 @@ use obs_rpc::cli::Args;
 use obs_rpc::server::{Server, ServerConfig};
 
 const KNOWN: &[&str] = &[
+    "bind",
     "network",
     "data-dir",
     "api-port",
@@ -58,7 +59,28 @@ const KNOWN: &[&str] = &[
     "help!",
 ];
 
+/// Where a service listens.
+///
+/// `0.0.0.0` is the default because a node or an interface is usually reached
+/// from another machine; a deployment that puts a TLS terminator in front of a
+/// service binds it to `127.0.0.1` instead, so the port is not reachable from
+/// the network at all.  An address that does not parse is refused rather than
+/// handed to the socket layer, because a mistyped bind address that silently
+/// became "every interface" is a security bug, not a typo.
+fn bind_address(args: &Args, default: &str) -> Result<String, String> {
+    let given = args.or("bind", default);
+    match given.trim().parse::<std::net::IpAddr>() {
+        Ok(address) => Ok(address.to_string()),
+        Err(_) => Err(format!(
+            "--bind {:?} is not an IP address; use 127.0.0.1 to keep this port local, or \
+             0.0.0.0 to accept connections from the network",
+            given
+        )),
+    }
+}
+
 fn usage() -> String {
+
     format!(
         "obs-node — run an Obsidian Network full node
 
@@ -66,8 +88,12 @@ Usage: obs-node [options]
 
   --network <name>           devnet (default), testnet, staging, mainnet
   --data-dir <path>          chain store directory (default ./data/<network>)
-  --api-port <n>             node API port (default 7200)
-  --listen-port <n>          peer port (default 9220)
+  --bind <ip>                address for the node API (default 0.0.0.0; use
+                             127.0.0.1 behind a TLS proxy)
+  --api-port <n>             node API port (default per network: mainnet 8200,
+                             testnet 8300, staging 8400, devnet 7200)
+  --listen-port <n>          peer port (default per network: mainnet 9200,
+                             testnet 9300, staging 9400, devnet 9220)
   --genesis-timestamp <t>    the network's epoch: unix seconds, or `now` (default: the
                              network's configured epoch — for a new devnet, use `now`)
   --genesis-file <path>      a network's recorded genesis (`<network>-genesis` from any of
@@ -200,14 +226,23 @@ fn main() -> ExitCode {
         }
     };
 
-    let api_port = match args.port("api-port", 7200) {
+    // Ports default per network (see `Network::api_port`): a host running a
+    // devnet beside a testnet must not have the second node fail to bind.
+    let bind = match bind_address(&args, "0.0.0.0") {
+        Ok(bind) => bind,
+        Err(error) => {
+            eprintln!("obs-node: {}", error);
+            return ExitCode::from(2);
+        }
+    };
+    let api_port = match args.port("api-port", network.api_port) {
         Ok(port) => port,
         Err(error) => {
             eprintln!("obs-node: {}", error);
             return ExitCode::from(2);
         }
     };
-    let listen_port = match args.port("listen-port", obs_p2p::DEFAULT_PORT) {
+    let listen_port = match args.port("listen-port", network.peer_port) {
         Ok(port) => port,
         Err(error) => {
             eprintln!("obs-node: {}", error);
@@ -432,7 +467,7 @@ fn main() -> ExitCode {
         }
     });
 
-    let server = match Server::bind(("0.0.0.0", api_port), ServerConfig::default()) {
+    let server = match Server::bind((bind.as_str(), api_port), ServerConfig::default()) {
         Ok(server) => server,
         Err(error) => {
             eprintln!("obs-node: the API could not bind port {}: {}", api_port, error);
