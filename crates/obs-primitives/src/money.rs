@@ -111,9 +111,15 @@ impl Amount {
         if denominator == 0 {
             return None;
         }
-        self.0.checked_mul(numerator).map(|product| {
-            Amount(product / denominator + u128::from(product % denominator != 0))
-        })
+        let product = self.0.checked_mul(numerator)?;
+        let quotient = product / denominator;
+        let round_up = u128::from(product % denominator != 0);
+        // The round-up cannot overflow: a non-zero remainder means
+        // `product >= quotient + 1`, so the rounded quotient never exceeds the
+        // product, which fits.  Checked anyway — this function sits on the
+        // monetary path, where "cannot overflow" is a thing to enforce rather
+        // than to argue.
+        quotient.checked_add(round_up).map(Amount)
     }
 
     /// Parses a decimal string such as `1.25` or `0.000000000001`.
@@ -231,6 +237,19 @@ mod tests {
         assert_eq!(Amount(10).mul_div_ceil(1, 4).unwrap(), Amount(3));
         assert_eq!(Amount(10).mul_div_floor(1, 4).unwrap(), Amount(2));
         assert!(Amount(1).mul_div_ceil(1, 0).is_none());
+        // The largest amount survives both the multiplication and the round-up
+        // without wrapping.
+        assert_eq!(Amount(u128::MAX).mul_div_ceil(1, 1).unwrap(), Amount(u128::MAX));
+        assert!(
+            Amount(u128::MAX).mul_div_ceil(2, 3).is_none(),
+            "the product must be checked, not wrapped"
+        );
+        // Right at the edge of the product limit, the round-up still lands.
+        let half = u128::MAX / 2;
+        assert_eq!(
+            Amount(half).mul_div_ceil(2, 3).unwrap(),
+            Amount((half * 2) / 3 + 1)
+        );
     }
 
     #[test]

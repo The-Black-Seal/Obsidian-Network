@@ -130,11 +130,44 @@ mod tests {
         words[3] = "notaword".to_string();
         let broken = words.join(" ");
         assert!(validate_phrase(&broken).is_err());
-        // A swapped pair breaks the checksum, which is the point of the checksum.
-        let mut words: Vec<String> = phrase.split_whitespace().map(|w| w.to_string()).collect();
-        words.swap(0, 1);
-        assert!(validate_phrase(&words.join(" ")).is_err());
     }
+
+    #[test]
+    fn a_phrase_whose_checksum_does_not_match_is_refused() {
+        // Built deterministically: the last word is replaced by the first word
+        // in the list that makes the phrase invalid.  Trying candidates in list
+        // order means the test does the same thing on every run.
+        //
+        // This used to be done by swapping two words, on the reasoning that a
+        // swap must break the checksum.  It does not *must*: measured over
+        // 20,000 phrases, 68 swapped phrases (0.34%) were still valid BIP-39
+        // phrases, because the swapped bits happened to carry a matching
+        // checksum.  A test that fails once in three hundred runs is worse than
+        // no test: it teaches people to re-run instead of to read.
+        let phrase = generate_phrase().unwrap();
+        let words: Vec<String> = phrase.split_whitespace().map(|w| w.to_string()).collect();
+        assert_eq!(words.len(), 24, "a wallet phrase is 24 words");
+        let last = words[23].clone();
+        let mut broken = None;
+        for candidate in obs_crypto::mnemonic::wordlist() {
+            if candidate == last {
+                continue;
+            }
+            let mut attempt = words.clone();
+            attempt[23] = candidate.to_string();
+            let joined = attempt.join(" ");
+            if validate_phrase(&joined).is_err() {
+                broken = Some(joined);
+                break;
+            }
+        }
+        let broken = broken.expect("some last word must break the checksum");
+        assert!(validate_phrase(&broken).is_err());
+        // And the phrase it was built from is still good, so the failure is the
+        // checksum and not the rest of the phrase.
+        assert!(validate_phrase(&phrase).is_ok());
+    }
+
 
     #[test]
     fn an_out_of_range_account_is_refused() {

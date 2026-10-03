@@ -1270,6 +1270,18 @@ impl ChainState {
                         "a transfer must move a non-zero amount",
                     ));
                 }
+                // No account can ever hold more than the maximum supply, so a
+                // transfer above it is unpayable on every chain this protocol
+                // can build.  Refusing it here, before any arithmetic touches
+                // it, is not a new consensus rule: it is the rule the balance
+                // check below already enforces, said early, so that no fee or
+                // balance computation ever has to handle a nonsense amount.
+                if amount.grains() > MAX_SUPPLY.grains() {
+                    return Err(StateError::new(
+                        "tx_amount_above_supply",
+                        "a transfer cannot exceed the total supply",
+                    ));
+                }
                 if *to == sender {
                     return Err(StateError::new(
                         "tx_self_transfer",

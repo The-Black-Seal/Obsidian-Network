@@ -312,12 +312,24 @@ pub fn gas_fee_for(amount: Amount) -> Amount {
     if amount.is_zero() {
         return Amount::ZERO;
     }
-    let numerator = amount.grains() * GAS_FEE_NUMERATOR;
-    let fee = numerator / GAS_FEE_DENOMINATOR + u128::from(numerator % GAS_FEE_DENOMINATOR != 0);
-    let capped = if fee > MAX_GAS_FEE.grains() {
-        MAX_GAS_FEE.grains()
-    } else {
-        fee
+    // `amount` arrives from a transaction's bytes and is not bounded by the
+    // decoder, so this multiplication must not be allowed to wrap: a wrapped
+    // numerator is a *wrong fee*, and in a debug build it is a panic inside the
+    // state machine.  When `amount * 2` does not fit in u128 the true fee is
+    // certainly above the cap — the cap binds from 50 OBS upwards and the
+    // smallest overflowing amount is more than 1.7e38 grains — so the overflow
+    // case has exactly one correct answer: the cap.
+    let capped = match amount.grains().checked_mul(GAS_FEE_NUMERATOR) {
+        Some(numerator) => {
+            let fee = numerator / GAS_FEE_DENOMINATOR
+                + u128::from(numerator % GAS_FEE_DENOMINATOR != 0);
+            if fee > MAX_GAS_FEE.grains() {
+                MAX_GAS_FEE.grains()
+            } else {
+                fee
+            }
+        }
+        None => MAX_GAS_FEE.grains(),
     };
     Amount(capped.max(MIN_GAS_FEE.grains()))
 }
@@ -378,5 +390,74 @@ mod tests {
             100
         );
         assert_eq!(MAX_CLAIMS_PER_DAY * CLAIM_INTERVAL_SECS, PROTOCOL_DAY_SECS);
+    }
+}
+
+#[cfg(test)]
+mod fee_extremes {
+    use super::*;
+
+    /// The fee is defined, bounded and correct for *every* amount a transaction
+    /// can carry, including the ones whose doubling does not fit in `u128`.
+    ///
+    /// This is the regression test for a real defect: `gas_fee_for` multiplied
+    /// without checking, so an amount above `u128::MAX / 2` — which any peer can
+    /// put in a transaction's bytes — panicked a debug build inside the state
+    /// machine, and (because the state machine runs under the node's mutex)
+    /// poisoned the node's API for the life of the process.  In release it
+    /// wrapped, returning a fee that had nothing to do with the amount.
+    #[test]
+    fn the_fee_is_defined_for_every_amount_including_the_extreme_ones() {
+        for amount in [
+            0u128,
+            1,
+            GAS_FEE_DENOMINATOR,
+            GAS_FEE_DENOMINATOR + 1,
+            u128::MAX / GAS_FEE_NUMERATOR - 1,
+            u128::MAX / GAS_FEE_NUMERATOR,
+            u128::MAX / GAS_FEE_NUMERATOR + 1,
+            u128::MAX / 2,
+            u128::MAX / 2 + 1,
+            u128::MAX - 1,
+            u128::MAX,
+        ] {
+            let fee = gas_fee_for(Amount(amount));
+            if amount != 0 {
+                assert!(
+                    fee.grains() >= MIN_GAS_FEE.grains(),
+                    "a non-zero amount always pays at least a grain: {} -> {}",
+                    amount,
+                    fee.grains()
+                );
+            }
+            assert!(
+                fee.grains() <= MAX_GAS_FEE.grains(),
+                "the cap always holds: {} -> {}",
+                amount,
+                fee.grains()
+            );
+        }
+        // The smallest amount above the doubling limit pays the cap, because the
+        // cap binds from 50 OBS and the overflow point is far above that.
+        assert_eq!(
+            gas_fee_for(Amount(u128::MAX / GAS_FEE_NUMERATOR + 1)),
+            MAX_GAS_FEE
+        );
+        assert_eq!(gas_fee_for(Amount(u128::MAX)), MAX_GAS_FEE);
+    }
+
+    /// The same property, over a spread of values rather than fixed points.
+    #[test]
+    fn the_fee_never_panics_or_wraps_over_a_sweep() {
+        let mut amount = 1u128;
+        while amount < u128::MAX / 4 {
+            let fee = gas_fee_for(Amount(amount));
+            assert!(fee.grains() >= 1 && fee.grains() <= MAX_GAS_FEE.grains());
+            // Doubling up (careful: the loop would overflow at the top).
+            amount = match amount.checked_mul(3) {
+                Some(next) => next,
+                None => break,
+            };
+        }
     }
 }

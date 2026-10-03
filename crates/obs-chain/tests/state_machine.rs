@@ -1596,3 +1596,48 @@ fn the_work_measure_is_time_rate_and_grows_with_participation() {
     let harder = obs_chain::pot::weight_of_block(8, 3, 3, 15_000);
     assert!(harder > slow, "difficulty scales the time-rate");
 }
+
+/// An amount that cannot exist is refused by name, not by panicking.
+///
+/// The fee for a transfer is derived from its amount, and the amount arrives
+/// from a transaction's bytes — so a hostile sender can put any `u128` in that
+/// field.  A transfer above the total supply is unpayable by construction: no
+/// account can ever hold that much.  The state machine must say so, rather than
+/// attempt arithmetic it cannot finish.  An overflow panic here would be far
+/// worse than a rejected transaction: the state machine runs under the node's
+/// state lock, so the panic would poison the lock and stop that node answering
+/// anything at all.
+#[test]
+fn an_amount_that_cannot_exist_is_refused_by_name_rather_than_panicking() {
+    let mut env = Env::new();
+    let (founder, _) = env.genesis();
+    let bob = Keypair::from_seed(&[66u8; 32]);
+    let bob_address = env.register(&bob, "frank@gmail.com", "TEST-INVITE-FRANK");
+
+    for amount in [
+        Amount(MAX_SUPPLY.grains() + 1),
+        Amount(u128::MAX / 2),
+        Amount(u128::MAX / 2 + 1),
+        Amount(u128::MAX - 1),
+        Amount(u128::MAX),
+    ] {
+        let tx = transfer(&mut env, &founder, bob_address, amount);
+        let error = env
+            .commit(vec![tx], Vec::new())
+            .expect_err("an amount above the total supply is unpayable");
+        assert_eq!(
+            error.rule, "tx_amount_above_supply",
+            "amount {} must be refused by name",
+            amount.grains()
+        );
+    }
+
+    // A transfer for the whole supply is *payable in principle* — it gets past
+    // the amount rule and fails on funds, which is the check it should fail.
+    let at_the_line = Amount(MAX_SUPPLY.grains());
+    let tx = transfer(&mut env, &founder, bob_address, at_the_line);
+    let error = env
+        .commit(vec![tx], Vec::new())
+        .expect_err("no single account holds the whole supply");
+    assert_eq!(error.rule, "tx_insufficient_funds");
+}
