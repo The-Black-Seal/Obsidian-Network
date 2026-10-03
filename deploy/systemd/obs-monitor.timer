@@ -1,0 +1,12 @@
+# Runs the health check every five minutes, and thirty seconds after boot.
+[Unit]
+Description=Obsidian Network monitor timer (@NETWORK@)
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=5min
+AccuracySec=15s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,18 @@
+# Obsidian Network health check — the five numbers of docs/17-operations.md.
+# Rendered by scripts/deploy.sh (paths are filled in), and started by the timer.
+[Unit]
+Description=Obsidian Network monitor (@NETWORK@)
+Documentation=file://@PREFIX@/docs/17-operations.md
+
+[Service]
+Type=oneshot
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@PREFIX@
+# --alert-cmd is where an operator plugs in mail or a chat webhook; without one
+# the check still runs and its output lands in the journal.
+ExecStart=@PREFIX@/scripts/monitor.sh --network @NETWORK@ \
+    --node-url http://127.0.0.1:@API_PORT@ \
+    --app-url http://127.0.0.1:@UI_PORT@ \
+    --data-dir @DIR@ --state @DIR@/monitor.state @ALERT@
+Nice=5

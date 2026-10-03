@@ -1,0 +1,31 @@
+# Obsidian Network interface — the Explorer, the wallet and the Developer Portal.
+# Rendered by scripts/deploy.sh.  Bound to loopback; put a TLS terminator in
+# front of it (docs/16-networks-and-deployment.md, "TLS in front of it").
+[Unit]
+Description=Obsidian Network interface (@NETWORK@)
+Documentation=file://@PREFIX@/docs/14-apis.md
+After=obs-node.service
+Wants=obs-node.service
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@PREFIX@
+ExecStart=@PREFIX@/target/release/obs-app --network @NETWORK@ --bind 127.0.0.1 \
+    --port @UI_PORT@ --node-url http://127.0.0.1:@API_PORT@ \
+    --static-dir @PREFIX@/web --store @DIR@/index.json \
+    --accounts --accounts-store @DIR@/accounts.json \
+    --authority-key @DIR@/authority.key
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ReadWritePaths=@DIR@
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

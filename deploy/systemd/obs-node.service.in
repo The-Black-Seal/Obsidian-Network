@@ -1,0 +1,39 @@
+# Obsidian Network node — rendered by scripts/deploy.sh, which fills in the
+# @PLACEHOLDERS@ from the network table and this deployment's paths.
+#
+# The API port is bound to loopback on purpose: the only port the world should
+# reach is the one a TLS proxy owns.  The peer port is bound to every interface,
+# because consensus connections come from other hosts.
+[Unit]
+Description=Obsidian Network node (@NETWORK@)
+Documentation=file://@PREFIX@/docs/17-operations.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@PREFIX@
+ExecStart=@PREFIX@/target/release/obs-node --network @NETWORK@ \
+    --data-dir @DIR@/node --bind 127.0.0.1 --api-port @API_PORT@ \
+    --listen-port @PEER_PORT@ --fsync @MINE@ @VALIDATOR@ \
+    --authority-key @AUTHORITY_KEY@ \
+    --keystore @DIR@/founder.keystore.json \
+    --keystore-password-file @DIR@/founder.password.txt
+Restart=always
+RestartSec=5
+# A node that dies is restarted; a node that is replaced is not restarted into a
+# second copy of itself.
+KillMode=mixed
+TimeoutStopSec=30
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ReadWritePaths=@DIR@
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
