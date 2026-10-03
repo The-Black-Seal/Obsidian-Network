@@ -32,6 +32,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 SOURCE="${1:-${LOGO_URL:-}}"
+# Set when the mark was drawn in this repository rather than handed over, so the
+# provenance says which of the two it is.  The committed file is always the
+# artifact a reader can hash; this only records where it came from.
+AUTHORED="${LOGO_AUTHORED:-0}"
+case "$AUTHORED" in 1|true|yes) AUTHORED=1 ;; *) AUTHORED=0 ;; esac
 if [ -z "$SOURCE" ]; then
     echo "usage: bash scripts/sync-logo.sh <url|file>" >&2
     echo "   or: LOGO_URL=<url> bash scripts/sync-logo.sh" >&2
@@ -48,9 +53,11 @@ trap 'rm -f "$temporary"' EXIT
 
 if [ -f "$SOURCE" ]; then
     # A file the operator already has: no network, no source to record at all.
+    origin="$([ "$AUTHORED" = 1 ] && echo 'authored in this repository from the operator mark' || echo 'operator-supplied file')"
     cp "$SOURCE" "$temporary"
     echo "sync-logo: using $(bytes_of "$temporary") bytes from the file $SOURCE"
 else
+    origin='operator-supplied url'
     command -v curl >/dev/null 2>&1 || { echo "sync-logo: curl is required for a URL" >&2; exit 1; }
     echo "sync-logo: fetching the mark"
     # --fail so an error page is not saved as a logo; a browser-like Accept so
@@ -110,9 +117,11 @@ PY
 {
     echo "# Provenance of the official mark carried in this repository."
     echo "#"
-    echo "# The bytes below came from a source the operator supplied — a link or a"
-    echo "# file, deliberately not both fetched and written down: the origin is"
-    echo "# configuration, not source. What can be checked is the artifact itself."
+    echo "# The origin is recorded, not the location: a link the operator supplied is"
+    echo "# configuration and is never written down, while an image drawn in this"
+    echo "# repository says so. What can be checked either way is the artifact itself:"
+    echo "# hash the file named below."
+    echo "source:      $origin"
     echo "file:        $(basename "$destination")"
     echo "sha256:      $hash"
     echo "bytes:       $size"
@@ -129,9 +138,9 @@ banner() {
     path="$1"
     prefix="$2"
     [ -f "$path" ] || return 0
-    line="<img src=\"${prefix}web/assets/logo-official.png\" alt=\"Obsidian Network\" width=\"88\">"
+    line="<img src=\"${prefix}web/assets/$(basename "$destination")\" alt=\"Obsidian Network\" width=\"88\">"
     temporary_banner="$(mktemp)"
-    if head -n 1 "$path" | grep -q 'logo-official\.png'; then
+    if head -n 1 "$path" | grep -q 'logo-official\.'; then
         # Already bannered: replace the line, so a re-run cannot stack banners.
         {
             echo "$line"

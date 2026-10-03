@@ -1,3 +1,5 @@
+<img src="../web/assets/logo-official.svg" alt="Obsidian Network" width="88">
+
 # Obsidian Network — documentation
 
 Obsidian Seal Coin (**OBS**) is a chain whose scarce resource is *protocol time*,

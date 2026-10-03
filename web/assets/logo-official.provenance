@@ -1,0 +1,13 @@
+# Provenance of the official mark carried in this repository.
+#
+# The origin is recorded, not the location: a link the operator supplied is
+# configuration and is never written down, while an image drawn in this
+# repository says so. What can be checked either way is the artifact itself:
+# hash the file named below.
+source:      authored in this repository from the operator mark
+file:        logo-official.svg
+sha256:      3fc47835a09f5cc075120a1cef2530c9383d8b5999c6586bc3f0677191b16306
+bytes:       11249
+media_type:  image/svg+xml
+fetched_utc: 2026-10-03T21:16:47Z
+installed_by: scripts/sync-logo.sh

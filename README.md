@@ -1,3 +1,5 @@
+<img src="web/assets/logo-official.svg" alt="Obsidian Network" width="88">
+
 # Obsidian Network
 
 **Obsidian Seal Coin (OBS)** — a blockchain whose scarce resource is **protocol
