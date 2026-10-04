@@ -63,6 +63,11 @@ async function renderHome(root, navigate) {
   const lag = state.indexStatus;
   if (lag) {
     const behind = Number(status.height) - Number(lag.indexed_height);
+    // Being level with the head is not the same as holding the whole chain: an
+    // index that started after the chain did has the newest blocks and none of
+    // the history, and it says which, rather than reporting itself "current".
+    const from = Number(lag.indexed_from || 0);
+    const complete = lag.history_complete === true;
     root.append(card({
       title: 'The index',
       subtitle: 'The explorer follows a node; it is not the node.',
@@ -70,6 +75,9 @@ async function renderHome(root, navigate) {
         metric('Node height', String(status.height)),
         metric('Indexed height', String(lag.indexed_height)),
         metric('Behind', behind > 0 ? `${behind} blocks` : 'current'),
+        metric('History from', complete ? 'the genesis block' : (from > 0 ? `block ${from}` : 'not read yet')),
+        metric('Coverage', complete ? 'the whole chain' : 'part of the chain, backfilling'),
+        metric('Indexed blocks', String(lag.blocks_indexed ?? '—')),
       ]),
     }));
   }

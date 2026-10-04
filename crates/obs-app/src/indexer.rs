@@ -41,6 +41,13 @@ use obs_rpc::client::{json_body, Client, ClientError};
 
 use crate::privacy::mask_address;
 
+/// How many blocks of history one sync walks back through.
+///
+/// Bounded so that a sync cannot hold the index for as long as a chain is long:
+/// the backfill walks backwards a slice at a time, and the API reports the range
+/// it has covered so far.
+const BACKFILL_BATCH: usize = 64;
+
 /// A failure talking to the node.
 #[derive(Debug)]
 pub enum IndexError {
@@ -242,12 +249,27 @@ pub struct Indexer {
     validators: Vec<IndexedValidator>,
     /// Deepest height this index has seen.
     pub indexed_height: u64,
+    /// The height below which this index has not read yet.
+    ///
+    /// `None` until the index has seen the chain's tail and learned where its
+    /// history begins; `Some(0)` once it has read down to the genesis block.
+    /// Anything in between is the backfill's cursor.  This is the field that
+    /// makes "the index is behind" an honest statement rather than a guess: the
+    /// index can be level with the node's head and still be missing everything
+    /// that happened before it started, and those are different facts.
+    pub next_missing: Option<u64>,
     /// Blocks replaced because a different block took their height.
     pub reorgs_seen: u64,
     /// Blocks added since the indexer started.
     pub blocks_added: u64,
     /// Times the node has been unreachable.
     pub sync_failures: u64,
+    /// Times the backfill asked for history and the node returned none.
+    ///
+    /// A count above zero while `history_complete` is false means the node will
+    /// not serve the blocks below the cursor — an operator's problem, not the
+    /// index's, and one the index refuses to paper over.
+    pub stalls: u64,
     /// The most recent error, for the operator's page.
     pub last_error: Option<String>,
     /// How many blocks to keep in memory.
@@ -268,9 +290,11 @@ impl Indexer {
             activity: BTreeMap::new(),
             validators: Vec::new(),
             indexed_height: 0,
+            next_missing: None,
             reorgs_seen: 0,
             blocks_added: 0,
             sync_failures: 0,
+            stalls: 0,
             last_error: None,
             retention: 5_000,
             recent_per_address: 20,
@@ -505,6 +529,77 @@ impl Indexer {
     }
 
     fn sync_inner(&mut self) -> Result<usize, IndexError> {
+        let mut added = self.sync_recent()?;
+        added += self.backfill(BACKFILL_BATCH)?;
+        if added > 0 {
+            self.refresh_validators()?;
+        }
+        Ok(added)
+    }
+
+    /// How many blocks of history one `sync` is willing to read.
+    ///
+    /// Bounded on purpose.  A chain can be older than any index, and a sync that
+    /// tried to read all of it would hold the index's lock for as long as the
+    /// chain is long — so the backfill walks backwards a slice at a time and is
+    /// honest about the range it has covered so far.
+    fn backfill(&mut self, batch: usize) -> Result<usize, IndexError> {
+        let Some(below) = self.next_missing else {
+            // The tail has not been read yet: nothing to walk back from.
+            return Ok(0);
+        };
+        if below == 0 {
+            return Ok(0);
+        }
+        let page = self.get(&format!("/api/v1/blocks?limit={}&before={}", batch, below))?;
+        let summaries = page
+            .get("blocks")
+            .and_then(Json::as_array)
+            .ok_or_else(|| IndexError::Shape("blocks.blocks is missing".to_string()))?;
+        let mut added = 0usize;
+        let mut lowest = below;
+        // Oldest first, so the activity timeline is built in the right order and
+        // the cursor only ever moves towards the genesis block.
+        for summary in summaries.iter().rev() {
+            let height = summary
+                .get("height")
+                .and_then(Json::as_i128)
+                .ok_or_else(|| IndexError::Shape("block.height is missing".to_string()))?
+                as u64;
+            lowest = lowest.min(height);
+            if self.blocks.contains_key(&height) {
+                continue;
+            }
+            let block = self.fetch_block(height)?;
+            self.record_block(block);
+            added += 1;
+        }
+        if self.blocks.contains_key(&1) || lowest == 1 {
+            // The genesis block is in hand: there is nothing below it, and the
+            // history from block 1 up has been read.
+            self.next_missing = Some(0);
+        } else if lowest < below {
+            self.next_missing = Some(lowest.saturating_sub(1));
+        } else {
+            // The page carried nothing below the cursor, so the walk cannot move
+            // — and this is *not* the end of history.  A node that answers the
+            // newest window whatever it is asked for would otherwise be mistaken
+            // for a chain that begins where the index happened to start, and the
+            // index would report a complete history it has never read.  So the
+            // cursor stays where it is, the stall is counted, and the status
+            // route keeps saying the history is incomplete.
+            self.stalls += 1;
+            self.last_error = Some(format!(
+                "the node returned no blocks below {}: the index cannot read further back",
+                below
+            ));
+        }
+        Ok(added)
+    }
+
+    /// Reads the newest blocks — the window the index follows continuously — and
+    /// learns, the first time it sees them, how far back the history goes.
+    fn sync_recent(&mut self) -> Result<usize, IndexError> {
         // Fetch the recent blocks the node is willing to hand over in one call.
         let recent = self.get("/api/v1/blocks?limit=32")?;
         let summaries = recent
@@ -526,10 +621,33 @@ impl Indexer {
             self.record_block(block);
             added += 1;
         }
-        if added > 0 {
-            self.refresh_validators()?;
+        // An index that has just started is level with the node's head and has
+        // read none of the blocks below it.  Now that its oldest block is known,
+        // everything under it is the backfill's work.
+        if self.next_missing.is_none() {
+            if let Some(oldest) = self.blocks.keys().next().copied() {
+                self.next_missing = Some(oldest.saturating_sub(1));
+            }
         }
         Ok(added)
+    }
+
+    /// The lowest block this index holds, or 0 when it holds none.
+    pub fn indexed_from(&self) -> u64 {
+        self.blocks.keys().next().copied().unwrap_or(0)
+    }
+
+    /// Whether the index has *read* every block from the genesis block up.
+    ///
+    /// This is a fact about reading, not about holding: retention can drop old
+    /// blocks from memory on a long chain, and `indexed_from` is the range the
+    /// explorer answers about.  What this field refuses to do is call a partial
+    /// chain complete — an index level with the head and holding the newest
+    /// window is not a whole explorer, and the API says which of the two it is.
+    pub fn history_complete(&self) -> bool {
+        // `Some(0)` is the sentinel the backfill sets only when it has held the
+        // genesis block; `None` means it has not read the tail yet.
+        self.next_missing == Some(0)
     }
 
     fn fetch_block(&self, height: u64) -> Result<IndexedBlock, IndexError> {
@@ -591,6 +709,16 @@ impl Indexer {
         let height = block.height;
         for id in &block.transaction_ids {
             if let Ok(transaction) = self.fetch_transaction(id, block.height) {
+                // A claim is counted where it is *recorded*, not where it is
+                // asked about: the earlier shape of this code counted claims in
+                // a method no caller used, so every address in the explorer
+                // reported "claims: 0" — including the address that claimed the
+                // genesis allocation.  A figure that is always zero is not a
+                // privacy feature, it is a bug with a privacy story.
+                if transaction.kind == "claim" {
+                    let sender = transaction.sender.clone();
+                    self.note_claim(&sender, block.height, block.timestamp);
+                }
                 self.transactions.insert(id.to_ascii_lowercase(), transaction);
             }
         }
@@ -670,16 +798,26 @@ impl Indexer {
                 entry.last_seen = timestamp;
             }
         }
-        entry.recent_heights.insert(0, height);
+        // Newest first, and holding the *highest* heights rather than the last
+        // ones recorded.  The difference only shows when an index reads history
+        // backwards: if the cap kept whatever arrived most recently, a backfill
+        // would end with a "recent" list naming the genesis blocks — the exact
+        // opposite of what the field says it is.
+        if !entry.recent_heights.contains(&height) {
+            entry.recent_heights.push(height);
+        }
+        entry.recent_heights.sort_unstable_by(|left, right| right.cmp(left));
         entry.recent_heights.truncate(recent_per_address);
     }
 
     /// Records a claim against an address's activity.
     ///
     /// Claims are the mining side of the public record: *that* an address mined
-    /// is public, how much it holds is not.
-    pub fn note_claim(&mut self, address: &Address, height: u64, timestamp: u64) {
-        let key = mask(address).to_ascii_lowercase();
+    /// is public, how much it holds is not.  The address arrives as the node
+    /// publishes it — masked — which is also the key activity is stored under,
+    /// so the explorer never has to hold a whole address to count what it did.
+    fn note_claim(&mut self, published: &str, height: u64, timestamp: u64) {
+        let key = self.activity_key(published);
         self.bump_activity(&key, height, timestamp, false);
         if let Some(entry) = self.activity.get_mut(&key) {
             entry.claims += 1;

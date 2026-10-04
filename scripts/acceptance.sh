@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# The acceptance run: 112 numbered checks over the whole system.
+# The acceptance run: 114 numbered checks over the whole system.
 #
 # Half of these are greps and unit-level gates that need nothing running; the
 # other half drive a live devnet over HTTP, exactly as a person or a wallet
@@ -26,6 +26,13 @@ NODE_NETWORK="${OBSIDIAN_NETWORK:-devnet}"
 # Exported because checks that need a shell script of their own run in a child
 # bash, and a check must read the same deployment the rest of the run does.
 export BASE NODE NODE_PORT NODE_API_PORT NODE_NETWORK
+
+# Checks that have to name an address read the founder's keystore: the network
+# publishes activity against masked addresses, so only the wallet's owner can
+# produce the full form the explorer answers about.
+FOUNDER_KEYSTORE="${OBSIDIAN_FOUNDER_KEYSTORE:-/tmp/quick-devnet/founder.keystore.json}"
+FOUNDER_PASSWORD="${OBSIDIAN_FOUNDER_PASSWORD:-/tmp/quick-devnet/founder.password.txt}"
+export FOUNDER_KEYSTORE FOUNDER_PASSWORD
 
 PASS=0
 FAIL=0
@@ -597,6 +604,48 @@ check 111 "the founder wallet can be the one the operator’s phrase describes" 
 # a live deployment nor spends the deployment's own invitation.
 check 112 "the published founder invitation registers at a registration service" \
     bash scripts/invite-check.sh --network devnet --port 19510
+
+# An index that started after its chain did must read the history it missed, and
+# must say how far back it has got until it has.  A deployment whose explorer was
+# level with the head while holding a fraction of the chain is the defect this
+# holds shut; the backfill is bounded per sync, so the check waits for it.
+check 113 "the explorer reads the history it was not running for, and reports its range" \
+    bash -c "for _ in \$(seq 1 90); do
+            status=\$(curl -sf $BASE/v1/explorer/status) || exit 1
+            case \"\$status\" in *'\"history_complete\":true'*) break ;; esac
+            sleep 2
+        done
+        case \"\$status\" in
+            *'\"indexed_from\":1'*) ;;
+            *) echo \"the index has not reached the genesis block: \$status\"; exit 1 ;;
+        esac
+        case \"\$status\" in
+            *'\"history_complete\":true'*) ;;
+            *) echo \"the index never reported a complete history: \$status\"; exit 1 ;;
+        esac
+        case \"\$status\" in
+            *'\"index_behind\":0'*) ;;
+            *) echo \"the index is not level with the node: \$status\"; exit 1 ;;
+        esac"
+
+# The genesis claim is in block 1 and the explorer has to show that the address
+# made it.  Only the founder can name the founder's address — the network does
+# not publish addresses in the clear — so the check reads it out of the founder's
+# keystore, which is where an operator keeps it.
+check 114 "the explorer counts the genesis claim against the address that made it" \
+    bash -c 'address="$(./target/debug/obs-cli wallet address --network "$NODE_NETWORK" \
+            --keystore "$FOUNDER_KEYSTORE" --password-file "$FOUNDER_PASSWORD" 2>/dev/null \
+            | sed -n "s/^address[[:space:]]*//p" | head -n 1)"
+        [ -n "$address" ] || { echo "name the founder keystore with OBSIDIAN_FOUNDER_KEYSTORE"; exit 1; }
+        activity="$(curl -sf "$BASE/v1/explorer/address/$address")" || exit 1
+        claims="$(printf %s "$activity" | sed -n "s/.*\"claims\":\([0-9][0-9]*\).*/\1/p")"
+        [ -n "$claims" ] || { echo "the record carries no claim count: $activity"; exit 1; }
+        [ "$claims" -ge 1 ] || { echo "the founder claim is not counted: $activity"; exit 1; }
+        printf %s "$activity" | grep -q "activity only" ||
+            { echo "the explorer did not describe the record as activity: $activity"; exit 1; }
+        printf %s "$activity" | grep -q "\"balance\"" &&
+            { echo "the activity record published a balance: $activity"; exit 1; }
+        exit 0'
 
 # ---------------------------------------------------------------------------
 

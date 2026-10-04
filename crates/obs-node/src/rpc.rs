@@ -274,10 +274,22 @@ impl NodeApi {
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or(20)
             .min(MAX_BLOCK_PAGE);
+        // `before` makes the listing page *backwards*, which is what an index
+        // needs to read the history it was not running for: without it the only
+        // window a client could ever see was the newest one, so an index started
+        // later could never hold the blocks below its first sync — and an
+        // explorer that holds a third of the chain while reporting itself
+        // "current" is exactly the story-telling this project refuses.
+        let before = request
+            .param("before")
+            .and_then(|value| value.parse::<u64>().ok());
         self.with_node(|node| {
             let height = node.height();
             let mut blocks = Vec::new();
-            let mut cursor = height;
+            let mut cursor = match before {
+                Some(before) => before.min(height),
+                None => height,
+            };
             while blocks.len() < limit && cursor >= 1 {
                 if let Some(block) = node.block_at(cursor) {
                     blocks.push(block_summary(node, block));

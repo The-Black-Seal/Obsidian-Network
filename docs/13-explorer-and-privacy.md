@@ -79,6 +79,27 @@ Two writes are forwarded, and only these:
   signature over a fresh nonce, to read **its own** state. The node answers only
   when the signature proves the key; an unknown account is a `404`, not a number.
 
+## The index says how much of the chain it holds
+
+An explorer follows a node, and it is not the node: it starts when it is started,
+so an index pointed at a running chain begins level with the head and holding
+none of the history. Those are different facts, and the status route publishes
+both:
+
+| Field | Meaning |
+|-------|---------|
+| `indexed_height` | the highest block this index holds |
+| `index_behind` | how far below the node's head that is (0 = level) |
+| `indexed_from` | the oldest block it holds |
+| `history_complete` | whether it has read every block down to the genesis block |
+
+The index walks its own history in bounded slices (64 blocks per sync), so a
+fresh deployment catches up from block 1 and says what it has covered until it
+is there. Per-address figures — claims, blocks proposed, recent heights — are
+activity within that range, and the interface shows the range next to them. An
+index that reported "current" while holding a third of the chain would be the
+opposite of what this document is for.
+
 The same is true of the wire, not only of the route table: a path under `/v1/`
 that matches no route is a `404 not_found` even though the interface is served
 from the same origin with a page fallback. `GET /v1/wallet/<address>/balance`

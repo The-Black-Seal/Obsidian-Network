@@ -70,6 +70,9 @@ fn free_port() -> u16 {
 struct Harness {
     api: Arc<NodeApi>,
     app_port: u16,
+    /// The node's own API port: a test can point a second index at the same
+    /// chain, which is how the backfill is exercised.
+    node_port: u16,
     registry: Arc<Mutex<Registry>>,
     wallet: Wallet,
     dir: PathBuf,
@@ -176,6 +179,7 @@ impl Harness {
         Harness {
             api,
             app_port,
+            node_port,
             registry,
             wallet,
             dir,
@@ -324,6 +328,19 @@ impl Harness {
         )
     }
 
+    /// The chain's head height, straight from the node.
+    fn head_height(&self) -> u64 {
+        let response = self
+            .client()
+            .get(&format!("http://127.0.0.1:{}/api/v1/status", self.node_port))
+            .expect("the node answers");
+        json_body(&response)
+            .expect("the node's status is JSON")
+            .get("height")
+            .and_then(Json::as_i128)
+            .expect("a height") as u64
+    }
+
     fn get(&self, path: &str) -> Json {
         let response = self
             .client()
@@ -428,6 +445,75 @@ fn the_index_follows_the_chain_and_never_invents_anything() {
         after.get("indexed_height").unwrap().as_i128().unwrap() as u64,
         after.get("node_height").unwrap().as_i128().unwrap() as u64,
     );
+}
+
+#[test]
+fn an_index_that_started_late_reads_the_history_it_missed() {
+    // The defect this test was written for: the indexer only ever asked the node
+    // for its *newest* blocks, so a deployment that started after its chain did
+    // held the tail and nothing else — and reported `index_behind: 0`, because it
+    // was level with the head. The first block's genesis claim was invisible in
+    // the explorer's per-address activity while the index called itself current.
+    let harness = Harness::launch(false);
+    // Mine enough blocks that the newest-window sync cannot be the whole chain.
+    for _ in 0..40 {
+        harness.mine();
+    }
+    let head = harness.head_height();
+    assert!(head > 40, "the chain is long enough: {}", head);
+
+    // A second index, as if this explorer had just been started against that
+    // chain: it knows only the node's URL, exactly like a fresh deployment.
+    let node_port = harness.node_port;
+    let mut indexer = Indexer::new(format!("http://127.0.0.1:{}", node_port), NETWORK);
+    assert_eq!(indexer.indexed_from(), 0, "a fresh index holds nothing");
+    assert!(!indexer.history_complete(), "and knows it has read nothing");
+
+    let mut rounds = 0;
+    while !indexer.history_complete() {
+        indexer.sync().expect("the node answers");
+        rounds += 1;
+        assert!(rounds < 200, "the backfill must terminate");
+    }
+
+    assert_eq!(indexer.indexed_from(), 1, "the index read down to the genesis block");
+    assert_eq!(
+        indexer.indexed_height, head,
+        "and up to the chain's head"
+    );
+    // The genesis claim is the point: it is in block 1, which the index could not
+    // have seen by following the head.
+    let activity = indexer.activity(&harness.wallet.address().to_string());
+    let activity = activity.expect("the founder's address has activity");
+    assert!(
+        activity.claims >= 1,
+        "the genesis claim in block 1 is counted: {:?}",
+        activity
+    );
+    // The timeline is capped at the twenty *highest* heights, so on a chain of
+    // forty blocks the first block is beyond it — and the record says so instead
+    // of naming the genesis blocks as "recent", which is what a backfill that
+    // kept whatever it last recorded would have shown.
+    assert_eq!(
+        activity.recent_heights.first().copied(),
+        Some(head),
+        "the timeline is newest first: {:?}",
+        activity.recent_heights
+    );
+    assert_eq!(activity.recent_heights.len(), 20, "and capped");
+    assert!(
+        !activity.recent_heights.contains(&1),
+        "the cap holds the recent blocks, not the oldest: {:?}",
+        activity.recent_heights
+    );
+    // Reading history is counted in the blocks themselves: the index holds every
+    // height from the genesis block up, which is the whole claim of the backfill.
+    assert_eq!(
+        indexer.block_count() as u64,
+        head,
+        "every block of the chain is indexed, not just the newest window"
+    );
+    assert_eq!(indexer.indexed_from(), 1);
 }
 
 #[test]

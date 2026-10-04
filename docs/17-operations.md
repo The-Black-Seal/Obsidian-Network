@@ -1,5 +1,27 @@
 # 17 — Operations
 
+## The index catching up after a restart
+
+An explorer restarted against a running chain starts where it starts: level with
+the node's head and holding no history. It reads its way back to the genesis block
+in slices of 64 blocks per sync, and until it gets there its status says so —
+`indexed_from` is the oldest block it holds and `history_complete` is `false`.
+
+What to watch:
+
+* `indexed_from` falling towards 1 and `history_complete` turning `true`: normal,
+  and quick on a young chain.
+* `indexed_from` not moving while the node is up: the index is not being synced
+  (`--sync-ms`), or the node is refusing the listing.
+* `index_behind` growing: the node is producing blocks faster than the index
+  reads them — a sign the machine is too small for the chain, not a bug.
+* `backfill_stalls` above zero with `history_complete` still `false`: the node
+  answered a request for history below the cursor with nothing, so the index
+  cannot read further back. It keeps the cursor where it is and says so rather
+  than reporting a complete chain it never read. In practice this means the node
+  is an older build without the `before` cursor on its block listing, or it is
+  refusing the request.
+
 ## Day two of a node
 
 ```sh

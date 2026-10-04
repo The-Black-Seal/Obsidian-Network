@@ -29,7 +29,7 @@ from the same checkout, which is what check 101 exists to pin down.
 
 Rust suite: 374 passed, 0 failed. JavaScript suite: 19 passed, 0 failed.
 
-## The 112 checks
+## The 114 checks
 
 | # | Check | Result |
 |---|-------|--------|
@@ -145,6 +145,8 @@ Rust suite: 374 passed, 0 failed. JavaScript suite: 19 passed, 0 failed.
 | 110 | reset refuses mainnet, requires consent, and keeps the chain it replaces | pass |
 | 111 | the founder wallet can be the one the operator's phrase describes | pass |
 | 112 | the published founder invitation registers at a registration service | pass |
+| 113 | the explorer reads the history it was not running for, and reports its range | pass |
+| 114 | the explorer counts the genesis claim against the address that made it | pass |
 
 ## What the run found
 
@@ -609,6 +611,50 @@ on success anyway), and every verdict now travels on file descriptor 9 — the
 run's own stdout as it was at start-up — so a future redirection on a check
 command cannot silence its result. The run now prints exactly as many verdicts as
 it counts: 112 and 112.
+
+### Twenty-seventh defect: the explorer held only the blocks it had watched
+
+Found by setting up a chain and then pointing an explorer at it — which is what
+every deployment does, and what no test did.
+
+The indexer asked the node for its newest blocks and nothing else. The node's own
+listing route could only ever answer that question, because it had no way to be
+asked for the blocks *below* a height. So an index that started against a running
+chain held the tail and none of the history beneath it — and it reported
+`index_behind: 0`, because it *was* level with the head. On the devnet used for
+this run, at height 500, the explorer held 53 blocks and described itself as
+current. The genesis claim, made in block 1, was invisible: asking the explorer
+about the founder's address answered `claims: 0`.
+
+Two things were wrong, and the second was hiding inside the first:
+
+1. **No way to page back.** The node's `/api/v1/blocks` now takes `before=<height>`
+   and starts its page there, so a client can walk the chain backwards a window
+   at a time. Nonsense is refused as a cursor rather than acted on (an
+   unparsable `before` is the default window; `before=0` is an empty page; a
+   height above the head is clamped to the head), and the page limit is still
+   bounded.
+2. **Claims were never counted.** `Indexer::note_claim` existed, was never
+   called, and `claims` was published as a field anyway — so every address in
+   every explorer response said `claims: 0`, for ever, including the address that
+   claimed the genesis allocation. Counting now happens where a block is
+   *recorded*, so it follows a backfill and does not depend on which request
+   arrived first. A figure that is always zero is not a privacy feature; it is a
+   bug with a privacy story.
+
+The index now walks its own history: one bounded slice of 64 blocks per sync,
+down to the genesis block, and it publishes `indexed_from` and
+`history_complete` while it does — because being level with the head and holding
+the whole chain are different facts, and an explorer that conflates them is
+telling a story. The interface shows the range too ("History from block 400,
+part of the chain, backfilling"), and check 113 holds a live deployment to it.
+
+The tests are `an_index_that_started_late_reads_the_history_it_missed`
+(`crates/obs-app/tests/explorer.rs`), which mines 40 blocks, starts a second
+index, and requires it to reach block 1 and count the claim there — it fails
+with the backfill removed — and
+`the_block_listing_can_be_paged_backwards_through_history`
+(`crates/obs-node/tests/node.rs`) for the route itself.
 
 The audit found no path that mints value, changes a balance, approves a claim,
 alters a fee, a reward, a supply or a timing rule, or bypasses consensus — and

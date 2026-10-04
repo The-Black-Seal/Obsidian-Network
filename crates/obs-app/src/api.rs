@@ -550,8 +550,11 @@ impl App {
         let _ = self.index().sync();
         let indexer = self.index();
         let indexed_height = indexer.indexed_height;
+        let indexed_from = indexer.indexed_from();
+        let history_complete = indexer.history_complete();
         let reorgs = indexer.reorgs_seen;
         let failures = indexer.sync_failures;
+        let stalls = indexer.stalls;
         let last_error = indexer.last_error.clone();
         let blocks_indexed = indexer.block_count();
         let addresses = indexer.address_count();
@@ -568,6 +571,12 @@ impl App {
                     "index_behind",
                     Json::Int(snapshot.node_height.saturating_sub(indexed_height) as i128),
                 ),
+                // The oldest block this index holds, and whether it has read the
+                // whole chain.  An index that started after the chain did is
+                // level with the head and still missing history: those are two
+                // different facts, and this is where the difference is published.
+                ("indexed_from", Json::Int(indexed_from as i128)),
+                ("history_complete", Json::Bool(history_complete)),
                 ("head", Json::Str(snapshot.head)),
                 ("state_root", Json::Str(snapshot.state_root)),
                 ("protocol_time", Json::Int(snapshot.protocol_time as i128)),
@@ -585,6 +594,7 @@ impl App {
                 ("validators_known", Json::Int(validators as i128)),
                 ("reorgs_seen", Json::Int(reorgs as i128)),
                 ("sync_failures", Json::Int(failures as i128)),
+                ("backfill_stalls", Json::Int(stalls as i128)),
                 (
                     "last_sync_error",
                     match last_error {

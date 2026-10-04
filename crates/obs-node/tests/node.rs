@@ -1509,6 +1509,91 @@ fn the_api_never_publishes_full_addresses_or_key_material() {
     }
 }
 
+/// The block listing can be asked for the blocks *below* a height.
+///
+/// Without it a client can only ever see the newest window, which is what made
+/// an index started against a running chain permanently unable to hold the
+/// history below its first sync.  The parameter is small; the property it buys
+/// is that an index can read the whole chain, and the check that it cannot be
+/// asked for nonsense is the one this test spends most of its assertions on.
+#[test]
+fn the_block_listing_can_be_paged_backwards_through_history() {
+    let (api, _founder) = api_devnet("pages", 131);
+    api.with_node(|node| {
+        for _ in 0..6 {
+            mine(node);
+        }
+    });
+    let head = api.get("/api/v1/status").get("height").unwrap().as_i128().unwrap() as u64;
+    assert!(head >= 7, "the chain has blocks to page through: {}", head);
+
+    // The default is still the newest window, unchanged.
+    let newest = api.get("/api/v1/blocks?limit=2");
+    let heights: Vec<u64> = newest
+        .get("blocks")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|block| block.get("height").unwrap().as_i128().unwrap() as u64)
+        .collect();
+    assert_eq!(heights, vec![head, head - 1]);
+
+    // `before` starts the page at that height, walking down: the window an index
+    // needs to read history it was not running for.
+    let older = api.get(&format!("/api/v1/blocks?limit=3&before={}", head - 2));
+    let heights: Vec<u64> = older
+        .get("blocks")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|block| block.get("height").unwrap().as_i128().unwrap() as u64)
+        .collect();
+    assert_eq!(heights, vec![head - 2, head - 3, head - 4]);
+
+    // Paging down to the genesis block and then asking for the block below it
+    // gives an empty page rather than an error or a wrapped height.
+    let bottom = api.get("/api/v1/blocks?limit=4&before=1");
+    assert_eq!(bottom.get("count").unwrap().as_i128(), Some(1));
+    assert_eq!(
+        bottom.get("blocks").unwrap().as_array().unwrap()[0]
+            .get("height")
+            .unwrap()
+            .as_i128(),
+        Some(1)
+    );
+    let below = api.get("/api/v1/blocks?limit=4&before=0");
+    assert_eq!(below.get("count").unwrap().as_i128(), Some(0));
+    assert_eq!(below.get("blocks").unwrap().as_array().unwrap().len(), 0);
+
+    // Nonsense is not a cursor: an unparsable or absent `before` is the default
+    // window, and a height above the head is clamped to the head.
+    for query in ["/api/v1/blocks?limit=2&before=abc", "/api/v1/blocks?limit=2&before=-4"] {
+        let page = api.get(query);
+        assert_eq!(
+            page.get("blocks").unwrap().as_array().unwrap()[0]
+                .get("height")
+                .unwrap()
+                .as_i128(),
+            Some(head as i128),
+            "{} falls back to the newest window",
+            query
+        );
+    }
+    let clamped = api.get(&format!("/api/v1/blocks?limit=1&before={}", head + 1_000));
+    assert_eq!(
+        clamped.get("blocks").unwrap().as_array().unwrap()[0]
+            .get("height")
+            .unwrap()
+            .as_i128(),
+        Some(head as i128)
+    );
+    // And the page limit is still bounded, whatever `before` says.
+    let huge = api.get("/api/v1/blocks?limit=100000&before=1000");
+    assert!(huge.get("blocks").unwrap().as_array().unwrap().len() <= 200);
+}
+
 #[test]
 fn the_api_reports_pool_events_and_peers() {
     let (api, _founder) = api_devnet("pool", 111);
