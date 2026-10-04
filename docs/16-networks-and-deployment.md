@@ -90,6 +90,88 @@ height stays 0, because block 1 is the registration.
 `scripts/deploy.sh` always does this correctly, in this order: founding keys,
 units, node started, founder registered, validator bonded, verified.
 
+### Being the wallet that takes the genesis allocation
+
+The 100,000 OBS genesis allocation goes to the account whose claim is in **block
+1**, and block 1 can only be proposed by the wallet that registers in it. So on a
+chain you found, the founder wallet *is* the treasury, and there is no way for a
+person who registers later — however early — to take that allocation: a claim in
+block 2 is an ordinary 0.000166666666 OBS claim like any other. This is the
+protocol, not a policy; [Genesis and treasury](08-genesis-and-treasury.md) has the mechanism.
+
+Therefore, if the treasury should be yours rather than a wallet a tool generated,
+found the chain with a wallet you already hold:
+
+```sh
+# words you created — in the wallet screen, or wherever you keep them, in a 0600
+# file: the phrase is read, validated by BIP-39, used, and copied nowhere else
+bash scripts/quickstart.sh start --network devnet --phrase-file ~/my-words.txt
+
+# or by hand, for any network
+obs-cli devnet init --network testnet --data-dir <DIR> \
+    --password-file <DIR>/password.txt --phrase-file ~/my-words.txt
+```
+
+The founder address printed at the end is then derivable from your words, and the
+treasury is yours. `--phrase-file` refuses a phrase with a wrong word or a broken
+checksum, refuses to overwrite an existing keystore, and does **not** write
+`founder.phrase.txt`: a phrase in two places is a phrase in two places to lose.
+
+### The invitation a test network publishes, and the one the service knows
+
+There are two doors an invitation can be used at, and they are not the same door:
+
+| Door | Which invitation it checks |
+|------|----------------------------|
+| `obs-cli devnet init` / `devnet register` (founding) | the published code, offline, with the authority key on this machine |
+| the interface's registration steps (`/v1/register/*`) | the codes minted into the **registration service's own store** |
+
+A test network's published founder invitation is minted into that store by
+`scripts/quickstart.sh` on a fresh deployment, so the code
+`obs-cli networks` advertises also works at the interface — otherwise a person
+typing it would be told `invite_invalid` about an invitation the network
+publishes. `scripts/invite-check.sh` proves the whole path against a scratch
+service, spending nothing real:
+
+```sh
+bash scripts/invite-check.sh --network devnet
+```
+
+On a deployment made by `scripts/deploy.sh` — a testnet, a staging network, or
+mainnet — nothing is minted for you. Mint the invitation you intend to hand out,
+then restart the service so it loads the store:
+
+```sh
+obs-cli invite mint --network testnet --store <DIR>/accounts.json \
+    --code "$(cat ~/my-invitation.txt)" --genesis
+sudo systemctl restart obs-app
+```
+
+Mainnet's genesis invitation is the operator's and is minted exactly once, into
+the store of the host that will accept the first registration, from a machine
+that is not the public host.
+
+### Resetting a test network
+
+```sh
+bash scripts/quickstart.sh reset --network devnet --yes            # keep the old chain aside
+bash scripts/quickstart.sh reset --network devnet --yes --purge    # delete it
+bash scripts/quickstart.sh reset --network mainnet --yes           # refused
+```
+
+A reset stops the deployment's processes, refuses to run while anything still
+holds its ports (a node that cannot bind its peer port still answers its API from
+the chain in its data directory, so "the API answered" is not evidence that this
+deployment is the one running), and — by default — **moves** the old directory to
+`<dir>.before-reset-<stamp>` rather than deleting it. The next `start` founds a
+new chain with a new founder wallet, a fresh account store, and the published
+invitation working again.
+
+Mainnet is refused outright, and not only for safety: a mainnet directory holds
+the network's authority key and the founder's wallet, while the chain itself
+lives on in every peer — so "reset" there would destroy the keys without
+resetting anything. That refusal is check 110.
+
 ## Each network, by hand
 
 The quickstart wraps these; running them by hand is what a service unit, a

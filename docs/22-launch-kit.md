@@ -61,6 +61,52 @@ What it does, and what each step is for:
 If a step fails, the report says which one, and the logs are in
 `<dir>/logs`. `--keep` leaves the nodes running so you can poke at them.
 
+### Resetting a test network
+
+```sh
+bash scripts/quickstart.sh reset --network devnet --yes            # keep the old chain aside
+bash scripts/quickstart.sh reset --network devnet --yes --purge    # delete it
+bash scripts/quickstart.sh reset --network mainnet --yes           # refused, always
+```
+
+A reset stops the deployment, refuses while anything still holds its ports (a
+node that cannot bind its peer port still answers its API from a chain it is not
+syncing, so a listener is the only honest evidence), and moves the old directory
+to `<dir>.before-reset-<stamp>` instead of deleting it. The next `start` founds
+a new chain: new founder wallet, empty account store, and the published founder
+invitation working again — at `obs-cli devnet init` *and* at the interface's
+registration steps, because a fresh deployment mints it into the registration
+service's store.
+
+Mainnet is refused by name. Its directory holds the authority key and the
+founder's wallet, and the chain is in every peer's hands: a "reset" there would
+destroy the keys and reset nothing.
+
+### Being the wallet that takes the genesis allocation
+
+The 100,000 OBS goes to block 1's claimant, and block 1 is proposed by the wallet
+that registers in it. So the founder wallet is the treasury, and no later
+registration can take it. To be that wallet, found the chain with words you hold:
+
+```sh
+bash scripts/quickstart.sh start --network devnet --phrase-file ~/my-words.txt
+```
+
+The phrase is validated (BIP-39), used to derive the founder wallet, and copied
+nowhere. Everything else about the deployment is unchanged.
+
+### Proving the invitation path before inviting anybody
+
+```sh
+bash scripts/invite-check.sh --network devnet
+```
+
+Starts a scratch registration service with its own store, mints the network's
+published invitation into it, and walks the gmail → password → invitation steps
+exactly as a person would — on loopback, with a throwaway identity, spending
+nothing real. It is acceptance check 112, and it is the answer to "the code the
+network advertises is refused by the service that is supposed to accept it".
+
 ## 2. Deploy the testnet
 
 On the server, as a user that can `sudo`:

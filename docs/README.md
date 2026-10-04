@@ -37,7 +37,7 @@ this file is a bug.
 | 18 | [Troubleshooting](18-troubleshooting.md) | The failures you will actually meet |
 | 19 | [Testing](19-testing.md) | What is tested, how, and what the tests refuse to assume |
 | 20 | [Parameters](20-parameters.md) | Every consensus constant in one table |
-| 21 | [Acceptance](21-acceptance.md) | The 109-step acceptance run, the defects it found, and the adversarial pass |
+| 21 | [Acceptance](21-acceptance.md) | The 112-step acceptance run, the defects it found, and the adversarial pass |
 | 22 | [The launch kit](22-launch-kit.md) | Rehearse, deploy, watch, back up, and the checklist for mainnet |
 | 23 | [The audit brief](23-audit-brief.md) | Scope, what to attack, what is already known, and launch readiness |
 

@@ -44,6 +44,7 @@ pub const OPTIONS: &[&'static str] = &[
     "password",
     "label",
     "phrase-out",
+    "phrase-file",
     "invite",
     "gmail",
 ];
@@ -120,6 +121,13 @@ pub fn init(context: &Context, args: &Args) -> Result<(), CliError> {
             .to_string(),
     );
     let label = args.or("label", "devnet founder");
+    // A phrase the operator brought, if they brought one.  It is read and
+    // validated before anything is written, and it never reaches a second file:
+    // the wallet is derived from it and the keystore is the only copy here.
+    let supplied_phrase = match args.get("phrase-file") {
+        Some(path) => Some(keys::read_phrase_file(std::path::Path::new(path))?),
+        None => None,
+    };
     let wallet = if keystore.exists() {
         // Re-opening an existing devnet: the founder keeps its address, so the
         // account it registers stays the same one.
@@ -130,6 +138,8 @@ pub fn init(context: &Context, args: &Args) -> Result<(), CliError> {
                 keystore.display()
             ))
         })?
+    } else if let Some(phrase) = supplied_phrase.as_deref() {
+        keys::create_wallet_from_phrase(context.network, phrase, &keystore, &password, &label)?
     } else {
         keys::create_wallet(
             context.network,
@@ -140,7 +150,25 @@ pub fn init(context: &Context, args: &Args) -> Result<(), CliError> {
         )?
     };
     println!("obs-cli: founder wallet {}", keystore.display());
-    println!("obs-cli: founder phrase {}", phrase_out.display());
+    match (&supplied_phrase, args.get("phrase-out")) {
+        // The operator's own phrase is not copied anywhere unless they name a
+        // file for it: a secret in one more place is one more place to lose it.
+        (Some(_), None) => println!(
+            "obs-cli: founder phrase  the one you supplied (your words, not copied here)"
+        ),
+        _ => {
+            if let (Some(phrase), Some(path)) = (&supplied_phrase, args.get("phrase-out")) {
+                keys::write_private(std::path::Path::new(path), &format!("{}\n", phrase))?;
+            }
+            println!("obs-cli: founder phrase {}", phrase_out.display());
+        }
+    }
+    if supplied_phrase.is_some() {
+        println!(
+            "obs-cli: the founder wallet is yours: this tool derived it from your phrase and \
+             kept no copy of the phrase"
+        );
+    }
     println!("obs-cli: founder address {}", wallet.address());
 
     // --- the invitation authorisation --------------------------------------

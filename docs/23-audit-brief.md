@@ -96,7 +96,7 @@ here is checkable by the operator alone, without trusting the authors.
 
 | # | Item | How to check |
 |---|------|--------------|
-| 1 | The suite is green on the release commit | `cargo test --workspace` (377), `node --test web/tests/*.test.mjs` (19), `bash scripts/acceptance.sh` (109) |
+| 1 | The suite is green on the release commit | `cargo test --workspace` (378), `node --test web/tests/*.test.mjs` (19), `bash scripts/acceptance.sh` (112) |
 | 2 | No secret is in the tree | `bash scripts/leak-check.sh` |
 | 3 | The one-machine rehearsal passes | `bash scripts/rehearse.sh` — 6 of 6 |
 | 4 | A two-host network runs for two weeks | deploy the testnet on two hosts; watch `height`, `finalized_height`, `peers` |

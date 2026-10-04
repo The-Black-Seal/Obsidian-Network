@@ -53,6 +53,47 @@ transaction (resubmitting is idempotent — the pool recognises it).
 * `identity_taken` — one canonical Gmail identity holds one account. A `+tag`,
   a dot, or `googlemail.com` does not make a new identity.
 
+## "The genesis allocation has already been claimed"
+
+It has, and it cannot be un-claimed: the 100,000 OBS is issued to the account
+whose claim is in the chain's **block 1**, and block 1 is proposed by the wallet
+that registers in it — the founder. A claim in any later block is an ordinary
+0.000166666666 OBS claim.
+
+The Explorer's Mining screen says it plainly: *Genesis claim — issued, the
+treasury holds it*. If the treasury is a wallet you do not hold, you are looking
+at a chain somebody else founded (on a devnet, usually the deployment's own
+tooling). There is no administrative way to move it, by design, and no
+configuration that unlocks it.
+
+To be the one who holds it, found your own chain with your own wallet:
+
+```sh
+bash scripts/quickstart.sh stop --network devnet --dir <DIR>
+bash scripts/quickstart.sh reset --network devnet --dir <DIR> --yes
+bash scripts/quickstart.sh start --network devnet --dir <DIR> --phrase-file ~/my-words.txt
+```
+
+The founder wallet derived from your words is then the treasury
+([Networks and deployment](16-networks-and-deployment.md#being-the-wallet-that-takes-the-genesis-allocation)).
+
+## `invite_invalid` although `obs-cli networks` prints the code
+
+The invitation exists in two places: the published code a test network advertises
+and uses for founding, and the registration service's own store. The interface
+only knows the second. On a deployment made by `scripts/quickstart.sh` the code
+is minted into the store for you; on one made by `scripts/deploy.sh` it is not,
+and neither is it on mainnet (where the invitation is the operator's):
+
+```sh
+obs-cli invite mint --network testnet --store <DIR>/accounts.json \
+    --code "$(cat ~/my-invitation.txt)" --genesis
+sudo systemctl restart obs-app     # the service reads the store at start-up
+```
+
+`bash scripts/invite-check.sh --network devnet` proves the whole path on a
+scratch service without spending a real invitation.
+
 ## `gmail_duplicate`: "this Gmail identity already has an account"
 
 The chain, not the registration server, is the authority on this, so the message

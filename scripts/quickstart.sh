@@ -6,7 +6,9 @@
 #   bash scripts/quickstart.sh                          # a devnet: build if needed, start, verify
 #   bash scripts/quickstart.sh status                   # what is running now
 #   bash scripts/quickstart.sh stop                     # stop the node and the interface
-#   bash scripts/quickstart.sh reset --yes              # delete it and found a fresh chain
+#   bash scripts/quickstart.sh reset --yes              # put the chain aside and found a fresh one
+#   bash scripts/quickstart.sh reset --yes --purge      # delete it instead of keeping it
+#   bash scripts/quickstart.sh start --phrase-file ~/words.txt   # found it with YOUR wallet
 #   bash scripts/quickstart.sh start --network testnet  # any of the four networks
 #   bash scripts/quickstart.sh start --dir ~/obsidian-testnet --ui-port 8182
 #
@@ -49,6 +51,22 @@
 # of founding a second one, and a second founder registration is refused by the
 # chain anyway (the CLI checks first, so it is quiet about it).
 #
+# Two ways to be the person who holds the treasury on a chain you found.  The
+# genesis allocation goes to the account whose claim is in block 1, and block 1
+# is proposed by the wallet that registers in it, so the founder *is* the
+# claimant: whatever wallet this script gives the node to mine with is the wallet
+# that takes the 100,000 OBS.  By default that wallet is generated here (and its
+# phrase is written under `--dir`); with `--phrase-file` it is derived from words
+# you already hold, so the treasury is yours and this script never sees a phrase
+# it invented.  `reset` puts a chain aside (archived, not deleted, unless you say
+# --purge) and refuses to touch mainnet at all.
+#
+# A test network's published founder invitation is also minted into the
+# registration service's store on a *fresh* deployment, so the same code that
+# founds the chain with the CLI also works at the interface's registration steps
+# — otherwise a person typing the code the network advertises would be told it is
+# unknown.  Mainnet's invitation is never minted by this script.
+#
 # On devnet, testnet and staging nothing here is real money: the authority key,
 # the founder's phrase and its password are written to plain files because those
 # networks are disposable, and their founder invitations are published constants
@@ -68,7 +86,9 @@ NETWORK="${OBSIDIAN_NETWORK:-devnet}"
 BLOCK_INTERVAL_MS=5000
 BUILD=1
 ASSUME_YES=0
+PURGE=0
 INVITE_FILE=""
+PHRASE_FILE=""
 ENV_FILE="${OBSIDIAN_ENV_FILE:-$HOME/.config/obsidian/env}"
 
 # The ports each network listens on, from `obs_primitives::network::Network`.
@@ -99,10 +119,12 @@ while [ "$#" -gt 0 ]; do
         --api-port) API_PORT="${2:?--api-port needs a number}" ; shift ;;
         --peer-port) PEER_PORT="${2:?--peer-port needs a number}" ; shift ;;
         --block-interval-ms) BLOCK_INTERVAL_MS="${2:?--block-interval-ms needs a number}" ; shift ;;
+        --phrase-file) PHRASE_FILE="${2:?--phrase-file needs a path}" ; shift ;;
         --no-build) BUILD=0 ;;
         --yes|-y) ASSUME_YES=1 ;;
+        --purge) PURGE=1 ;;
         -h|--help)
-            sed -n '3,32p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '3,35p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -234,6 +256,33 @@ json_string() { # json_string <json> <key>  → the first string for that key
     printf '%s' "$1" | grep -o "\"$2\":\"[^\"]*\"" | head -n 1 | cut -d'"' -f4
 }
 
+listening() { # listening <port>  → is anything bound to that port on this host
+    # A node that cannot bind its peer port still answers its API from the chain
+    # in its data directory, so "the API answered" is not evidence that this
+    # deployment is the one running.  A listener on its ports is.
+    local port="$1"
+    if command -v ss >/dev/null 2>&1; then
+        ss -ltn 2>/dev/null | grep -q ":$port " && return 0
+        ss -ltun 2>/dev/null | grep -q ":$port " && return 0
+        return 1
+    fi
+    if command -v netstat >/dev/null 2>&1; then
+        netstat -ltn 2>/dev/null | grep -q ":$port " && return 0
+        return 1
+    fi
+    # No way to look: say so once rather than pretend the check passed.
+    return 2
+}
+
+stamp() { date -u +%Y%m%dT%H%M%SZ; }
+
+# The invitation that founds this network as the *service* advertises it: the
+# published, disposable code of a test network.  Mainnet has none, by design.
+published_invite() {
+    "$BIN/obs-cli" networks 2>/dev/null \
+        | awk -v n="$NETWORK" '$1 == n && $2 == "disposable" { print $NF; exit }'
+}
+
 lan_address() {
     # The address another device on the same network can reach, if there is one.
     # Best effort: Termux does not always have `ip` or `ifconfig`, and a wrong
@@ -287,16 +336,76 @@ action_stop() {
 }
 
 action_reset() {
-    if [ "$ASSUME_YES" != 1 ]; then
-        printf 'devnet: this deletes the devnet in %s (chain, keys, password).  Re-run with --yes.\n' "$DIR" >&2
+    # Mainnet is refused outright, and not because of the flag: a mainnet
+    # deployment's directory holds the authority key, the founder's wallet and
+    # the treasury's password.  "Reset the chain" on mainnet is not a maintenance
+    # action, it is the loss of the network's identities — and the chain itself
+    # lives on in every peer, so a fresh directory would not even reset anything.
+    if [ "$NETWORK" = mainnet ]; then
+        printf 'quickstart: refusing to reset mainnet.\n' >&2
+        printf 'quickstart: %s holds the network authority key, the founder wallet and the password\n' "$DIR" >&2
+        printf 'quickstart: that seals them; a fresh directory would not reset the chain, it would destroy\n' >&2
+        printf 'quickstart: the keys.  If you meant to start a new chain, do it on another network.\n' >&2
         exit 2
     fi
+    if [ ! -e "$DIR" ]; then
+        say "there is nothing at $DIR; the next start founds a new chain"
+        return 0
+    fi
+    if [ "$ASSUME_YES" != 1 ]; then
+        if [ "$PURGE" = 1 ]; then
+            printf 'quickstart: this DELETES %s (chain, keys, password) and everything in it.\n' "$DIR" >&2
+        else
+            printf 'quickstart: this stops the %s in %s and moves the directory aside\n' "$NETWORK" "$DIR" >&2
+            printf 'quickstart: (chain, keys, password are kept in %s.before-reset-<stamp>).\n' "$DIR" >&2
+        fi
+        printf 'quickstart: the next start founds a NEW chain with a new founder wallet.  Re-run with --yes.\n' >&2
+        exit 2
+    fi
+
     # Stopped by hand rather than through `action_stop`, whose message about
-    # keeping the data would be a lie one line before deleting it.
+    # keeping the data would be a lie one line before moving it.
     stop_pidfile "$APP_PID" "the interface"
     stop_pidfile "$NODE_PID" "the node"
-    rm -rf "$DIR"
-    say "deleted $DIR; the next start founds a new chain"
+
+    # A process still holding these ports is still writing the files this is
+    # about to move or delete — very often a node started by hand from the same
+    # directory, whose pidfile this script therefore does not know.  Refuse
+    # rather than produce a half-reset deployment.
+    local port check
+    for port in "$API_PORT" "$PEER_PORT" "$UI_PORT"; do
+        check=0
+        listening "$port" || check=$?
+        case "$check" in
+            0)
+                die "port $port is still listening: stop that process first (reset would move files something is still writing)"
+                ;;
+            2)
+                say "note: no ss or netstat here, so "nothing is still running on this deployment" was not checked"
+                break
+                ;;
+        esac
+    done
+
+    if [ "$PURGE" = 1 ]; then
+        rm -rf "$DIR"
+        say "deleted $DIR (--purge)"
+    else
+        local aside="$DIR.before-reset-$(stamp)"
+        mv "$DIR" "$aside"
+        say "moved the old chain aside to $aside"
+        say "  its keys and its founder phrase are still there; delete it when you are sure"
+    fi
+    say "the next start founds a new chain with a new founder wallet:"
+    say "    $SELF start --network $NETWORK${PHRASE_FILE:+ --phrase-file $PHRASE_FILE}"
+    if [ "$NETWORK" != mainnet ]; then
+        local published
+        published="$("$BIN/obs-cli" networks 2>/dev/null | awk -v n="$NETWORK" '$1 == n && $2 == "disposable" { print $NF; exit }')"
+        if [ -n "$published" ]; then
+            say "  the founder invitation: $(printf '%s' "$published" | sed 's/....$/****/') (printed in full by \`obs-cli networks\`)"
+        fi
+    fi
+    say "  to found it with a wallet you already hold, add:  --phrase-file <your 24 words>"
 }
 
 action_start() {
@@ -354,18 +463,27 @@ EOF
     chmod 600 "$PASSWORD_FILE" 2>/dev/null || true
 
     if [ ! -f "$KEYSTORE" ] || [ ! -f "$AUTHORITY_KEY" ]; then
-        say "founding the network (authority key, founder wallet, invitation authorisation)"
+        if [ -n "${PHRASE_FILE:-}" ]; then
+            [ -r "$PHRASE_FILE" ] || die "--phrase-file $PHRASE_FILE is not readable"
+            say "founding the network with the wallet your phrase describes (the treasury will be yours)"
+        else
+            say "founding the network (authority key, founder wallet, invitation authorisation)"
+        fi
         # The command comes first: `obs-cli` reads argv[0] as the command, so a
         # global flag in front of it is an unknown command, not an option.
+        local founding=()
+        # Mainnet: the operator's own invitation, read from a file.  A test
+        # network: no flag, and the CLI uses the published disposable code.
         if [ -n "${INVITE:-}" ]; then
-            # Mainnet: the operator's own invitation, read from a file.  A test
-            # network: no flag, and the CLI uses the published disposable code.
-            "$BIN/obs-cli" devnet init --network "$NETWORK" \
-                --data-dir "$DIR" --password-file "$PASSWORD_FILE" --invite "$INVITE"
-        else
-            "$BIN/obs-cli" devnet init --network "$NETWORK" \
-                --data-dir "$DIR" --password-file "$PASSWORD_FILE"
+            founding+=(--invite "$INVITE")
         fi
+        # An operator who brought their own words holds the founder wallet, and
+        # therefore the account that block 1's genesis claim pays.
+        if [ -n "${PHRASE_FILE:-}" ]; then
+            founding+=(--phrase-file "$PHRASE_FILE")
+        fi
+        "$BIN/obs-cli" devnet init --network "$NETWORK" \
+            --data-dir "$DIR" --password-file "$PASSWORD_FILE" "${founding[@]}"
     fi
     # The node needs the authority's *public* key as hex; the CLI reads it out of
     # the key file, so the private half never has to be handled here.
@@ -421,6 +539,24 @@ EOF
         "$BIN/obs-cli" validator register --network "$NETWORK" --node-url "$NODE_URL" \
             --keystore "$KEYSTORE" --password-file "$PASSWORD_FILE" \
             --endpoint "http://127.0.0.1:$PEER_PORT" >/dev/null
+    fi
+
+    # --- 5b. the invitation the interface's registration steps accept -------
+    # `devnet init` used the published code to found the chain, which is one
+    # door; a person typing that code at the interface is at another, and the
+    # registration service only knows the invitations in its own store.  Minting
+    # it once, on a fresh store, is what makes the code the network advertises
+    # actually work everywhere it is advertised.  Mainnet is excluded: its
+    # invitation is the operator's, minted deliberately with `invite mint`.
+    if [ "$NETWORK" != mainnet ] && [ ! -f "$DIR/accounts.json" ]; then
+        local published
+        published="$(published_invite)"
+        if [ -n "$published" ]; then
+            say "minting the published founder invitation into the registration service's store"
+            "$BIN/obs-cli" invite mint --network "$NETWORK" --store "$DIR/accounts.json" \
+                --code "$published" --genesis >/dev/null
+            say "  a person can now register through the interface with the code \`obs-cli networks\` prints"
+        fi
     fi
 
     # --- 6. the interface --------------------------------------------------

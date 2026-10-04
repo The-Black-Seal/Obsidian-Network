@@ -213,11 +213,14 @@ Account registration (six steps, no email code)
 
 Operator
   devnet init --data-dir <dir> [--keystore <file>] [--password-file <file>] \
-              [--invite <code>] [--gmail <a@gmail.com>] [--node-url <url>]
+              [--invite <code>] [--gmail <a@gmail.com>] [--node-url <url>] \
+              [--phrase-file <file>]
               founds a network and registers the founder only when --node-url
               names the node that will carry block 1; without it, a node with
               --mine stays empty and `devnet register --node-url <url>` does the
-              registration later.
+              registration later.  --phrase-file derives the founder wallet from
+              a 24-word phrase you already hold, so the account that takes the
+              genesis allocation is yours; the phrase is never copied.
   devnet register --data-dir <dir> [--keystore <file>] [--password-file <file>]
   devnet expect-genesis
   authority generate --authority-key <file>

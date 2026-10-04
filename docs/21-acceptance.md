@@ -29,7 +29,7 @@ from the same checkout, which is what check 101 exists to pin down.
 
 Rust suite: 374 passed, 0 failed. JavaScript suite: 19 passed, 0 failed.
 
-## The 109 checks
+## The 112 checks
 
 | # | Check | Result |
 |---|-------|--------|
@@ -142,6 +142,9 @@ Rust suite: 374 passed, 0 failed. JavaScript suite: 19 passed, 0 failed.
 | 107 | the rehearsal refuses a port range a network owns | pass |
 | 108 | the launch kit and the audit brief say what they must | pass |
 | 109 | the live interface refuses an unknown API path instead of answering with the page | pass |
+| 110 | reset refuses mainnet, requires consent, and keeps the chain it replaces | pass |
+| 111 | the founder wallet can be the one the operator's phrase describes | pass |
+| 112 | the published founder invitation registers at a registration service | pass |
 
 ## What the run found
 
@@ -567,6 +570,45 @@ line against a live deployment.
 The lesson is the one this project keeps relearning: a property proven of a data
 structure is not a property of the service. The route table is not the wire, and
 a page is not an endpoint.
+
+### Twenty-fifth defect: `reset` would have deleted a mainnet deployment
+
+`scripts/quickstart.sh reset --network mainnet --yes` ran `rm -rf` on the
+deployment directory. That directory holds the network's authority key, the
+founder's wallet and its password: the three things that make a mainnet
+deployment *that* deployment. And the chain itself is not in that directory — it
+is in every peer — so the command would have destroyed the identities while
+resetting nothing. It is the one command in the kit that can turn a mistake into
+an unrecoverable loss.
+
+What it does now: refuses mainnet by name, before anything else, with the reason
+printed; requires `--yes`, and prints what will happen without it; refuses while
+anything still holds the deployment's ports (a process that is still writing the
+files being moved is how a "reset" becomes a half-reset); and, by default,
+**moves** the directory to `<dir>.before-reset-<stamp>` instead of deleting it.
+`--purge` deletes, and says so. Check 110 holds all four behaviours.
+
+### Twenty-sixth defect: a check that silenced its own verdict
+
+An acceptance check written as
+
+```sh
+check 100 "no private key … is in the tree" \
+    bash scripts/leak-check.sh >/dev/null
+```
+
+redirects the **`check` command's** stdout, not the script's — so the PASS line
+for that check went to `/dev/null`. The run still counted it and printed a
+correct total, which is what makes this the worst kind of harness bug: a check
+whose *failure* would also have been invisible. The reader would see a count
+higher than the number of verdicts and no way to tell which check was missing.
+It had already hidden two (100 and 112) before anyone noticed.
+
+Fixed twice over. The two redirections are gone (the captured output is discarded
+on success anyway), and every verdict now travels on file descriptor 9 — the
+run's own stdout as it was at start-up — so a future redirection on a check
+command cannot silence its result. The run now prints exactly as many verdicts as
+it counts: 112 and 112.
 
 The audit found no path that mints value, changes a balance, approves a claim,
 alters a fee, a reward, a supply or a timing rule, or bypasses consensus — and

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# The acceptance run: 104 numbered checks over the whole system.
+# The acceptance run: 112 numbered checks over the whole system.
 #
 # Half of these are greps and unit-level gates that need nothing running; the
 # other half drive a live devnet over HTTP, exactly as a person or a wallet
@@ -31,6 +31,16 @@ PASS=0
 FAIL=0
 FAILED_CHECKS=""
 
+# Every verdict and section heading is written to file descriptor 9, which is
+# this script's own stdout as it was at start-up.  A check command that ends in
+# `>/dev/null` — an easy slip while writing one, and one that has already
+# swallowed two verdicts in this file — would otherwise send the PASS or FAIL
+# line for that check into the void: the count would still rise, and the run
+# would report a check whose evidence nobody can see.  A failure nobody can read
+# is worse than no check at all, so the verdict does not travel on a descriptor
+# a check command can redirect.
+exec 9>&1
+
 # Warm the build before the first check.  Many checks are `cargo test`
 # invocations, and a check that has to compile is a check that measures the
 # machine's spare capacity as much as the code: on a busy or freshly-reset
@@ -45,8 +55,8 @@ if command -v cargo >/dev/null 2>&1; then
     }
 fi
 
-pass() { PASS=$((PASS + 1)); printf '  %3d. PASS  %s\n' "$1" "$2"; }
-fail() { FAIL=$((FAIL + 1)); FAILED_CHECKS="$FAILED_CHECKS $1"; printf '  %3d. FAIL  %s\n' "$1" "$2"; }
+pass() { PASS=$((PASS + 1)); printf '  %3d. PASS  %s\n' "$1" "$2" >&9; }
+fail() { FAIL=$((FAIL + 1)); FAILED_CHECKS="$FAILED_CHECKS $1"; printf '  %3d. FAIL  %s\n' "$1" "$2" >&9; }
 
 # check NUMBER "description" COMMAND...
 # The command's exit status decides; its output is captured for the message.
@@ -58,7 +68,7 @@ check() {
         pass "$number" "$description"
     else
         fail "$number" "$description"
-        printf '        %s\n' "$(printf '%s' "$output" | head -3 | tr '\n' ' ')"
+        printf '        %s\n' "$(printf '%s' "$output" | head -3 | tr '\n' ' ')" >&9
     fi
 }
 
@@ -434,7 +444,7 @@ check 99 "the full JavaScript suite passes" \
 # fragments, so the check does not contain what it looks for) and the third by
 # shape, because searching for that host by name would put the host here.
 check 100 "no private key, seed phrase, genesis invitation or logo source is in the tree" \
-    bash scripts/leak-check.sh >/dev/null
+    bash scripts/leak-check.sh
 
 # ---------------------------------------------------------------------------
 section "Networks (101)"
@@ -528,6 +538,65 @@ check 109 "the live interface refuses an unknown API path instead of answering w
             grep -q not_found /tmp/obs-api-probe.txt || { echo \"\$p is not a named refusal\"; exit 1; };
         done;
         curl -sf $BASE/explorer/blocks/1 | grep -q '<!DOCTYPE html>'"
+
+# ---------------------------------------------------------------------------
+section "Founding and resetting a network (110)"
+# ---------------------------------------------------------------------------
+
+# A reset is the one command here that can destroy a network's identities, so it
+# is bounded three ways: it refuses mainnet outright (a fresh directory would not
+# reset that chain, it would destroy the keys), it refuses without consent, and
+# by default it keeps the old chain instead of deleting it.  The ports are moved
+# off the devnet's own so the check does not argue with the running deployment.
+check 110 "reset refuses mainnet, requires consent, and keeps the chain it replaces" \
+    bash -c 'dir=/tmp/obs-acceptance-reset-$$; ports="--api-port 19500 --peer-port 19501 --ui-port 19502"
+        rm -rf "$dir" "$dir".before-reset-* 2>/dev/null
+        mkdir -p "$dir" && printf "chain\n" > "$dir/marker"
+        if bash scripts/quickstart.sh reset --network mainnet --dir "$dir" $ports --yes >/dev/null 2>&1; then
+            echo "reset was allowed to run against mainnet"; exit 1
+        fi
+        [ -f "$dir/marker" ] || { echo "the mainnet refusal still touched the directory"; exit 1; }
+        if bash scripts/quickstart.sh reset --network devnet --dir "$dir" $ports >/dev/null 2>&1; then
+            echo "reset ran without --yes"; exit 1
+        fi
+        [ -f "$dir/marker" ] || { echo "reset without --yes changed the directory"; exit 1; }
+        bash scripts/quickstart.sh reset --network devnet --dir "$dir" $ports --yes >/dev/null 2>&1 || exit 1
+        [ ! -e "$dir" ] || { echo "reset left the deployment in place"; exit 1; }
+        aside="$(ls -d "$dir".before-reset-* 2>/dev/null | head -n 1)"
+        [ -n "$aside" ] && grep -q chain "$aside/marker" || { echo "the old chain was not kept"; exit 1; }
+        rm -rf "$dir" "$dir".before-reset-*'
+
+# The founder wallet can be one the operator already holds, and on a chain the
+# genesis allocation goes to block 1’s claimant — which is the wallet that
+# registers in it.  So this is the switch that makes the treasury yours rather
+# than the tool’s.
+check 111 "the founder wallet can be the one the operator’s phrase describes" \
+    bash -c 'words=/tmp/obs-acceptance-words-$$; pw=/tmp/obs-acceptance-pw-$$
+        first=/tmp/obs-acceptance-f1-$$; second=/tmp/obs-acceptance-f2-$$
+        rm -rf "$words" "$pw" "$first" "$second"
+        printf "legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth title\n" > "$words"
+        printf "an-acceptance-password\n" > "$pw"
+        for dir in "$first" "$second"; do
+            ./target/debug/obs-cli devnet init --network devnet --data-dir "$dir" \
+                --password-file "$pw" --phrase-file "$words" >/dev/null 2>&1 || exit 1
+        done
+        a="$(./target/debug/obs-cli wallet address --network devnet --keystore "$first/founder.keystore.json" --password-file "$pw" | grep -o "dobs1[a-z0-9]*" | head -n 1)"
+        b="$(./target/debug/obs-cli wallet address --network devnet --keystore "$second/founder.keystore.json" --password-file "$pw" | grep -o "dobs1[a-z0-9]*" | head -n 1)"
+        [ -n "$a" ] && [ "$a" = "$b" ] || { echo "the same phrase produced two addresses: $a / $b"; exit 1; }
+        [ ! -f "$first/founder.phrase.txt" ] || { echo "the operator own phrase was copied to a second file"; exit 1; }
+        printf "not a phrase at all thank you\n" > "$words"
+        if ./target/debug/obs-cli devnet init --network devnet --data-dir /tmp/obs-acceptance-f3-$$ \
+            --password-file "$pw" --phrase-file "$words" >/dev/null 2>&1; then
+            echo "a phrase that is not a phrase founded a network"; exit 1
+        fi
+        rm -rf "$words" "$pw" "$first" "$second" /tmp/obs-acceptance-f3-$$'
+
+# The code a test network publishes as its founder invitation has to work where
+# it is advertised: the interface's registration steps.  scripts/invite-check.sh
+# proves it against a scratch service with a scratch store, so this neither needs
+# a live deployment nor spends the deployment's own invitation.
+check 112 "the published founder invitation registers at a registration service" \
+    bash scripts/invite-check.sh --network devnet --port 19510
 
 # ---------------------------------------------------------------------------
 

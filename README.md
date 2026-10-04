@@ -183,7 +183,7 @@ people ask first:
 * [Explorer and privacy](docs/13-explorer-and-privacy.md) — partial addresses and no balances, enforced three ways
 * [Security](docs/15-security.md) — the threat model, and what this system does not claim
 * [Operations](docs/17-operations.md) — the five numbers to watch, and what each one means
-* [Acceptance](docs/21-acceptance.md) — the 109-step run, what it found, and the adversarial pass
+* [Acceptance](docs/21-acceptance.md) — the 112-step run, what it found, and the adversarial pass
 * [The launch kit](docs/22-launch-kit.md) — rehearse, deploy the testnet, watch it, back it up, then mainnet
 * [The audit brief](docs/23-audit-brief.md) — what to review, what to attack, and the launch-readiness list
 
