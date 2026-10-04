@@ -431,6 +431,53 @@ fn the_index_follows_the_chain_and_never_invents_anything() {
 }
 
 #[test]
+fn an_unknown_api_path_is_a_404_even_when_the_interface_is_served() {
+    // The deployment serves the web interface, and the interface is a single
+    // page: any extension-less path that matches no route falls back to the
+    // shell.  That is right for `/explorer/blocks/12` and wrong for the API —
+    // `GET /v1/wallet/<address>/balance`, the route the privacy contract says
+    // does not exist, answered `200` with HTML before this test was written,
+    // which is the one answer a client could mistake for an endpoint.  A path
+    // under an API namespace must be refused whether or not a page is mounted.
+    let harness = Harness::launch_with(|config| {
+        let web = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../web");
+        assert!(web.join("index.html").is_file(), "the interface is in the tree");
+        config.static_dir = Some(web.to_string_lossy().to_string());
+    });
+    harness.mine();
+    let address = harness.wallet.address().to_string();
+
+    for path in [
+        format!("/v1/wallet/{}/balance", address),
+        "/v1/nonesuch".to_string(),
+        "/v1".to_string(),
+        "/v1/explorer/balance".to_string(),
+    ] {
+        let (code, body) = harness.get_raw(&path);
+        assert_eq!(code, 404, "GET {} must not exist, body: {}", path, body);
+        assert!(
+            body.contains("not_found"),
+            "GET {} should be a named refusal, body: {}",
+            path,
+            body
+        );
+        assert!(
+            !body.contains("<!DOCTYPE html>"),
+            "GET {} answered with the interface shell",
+            path
+        );
+    }
+
+    // And the pages themselves still reach the shell, or the fix would have
+    // broken the product to satisfy the test.
+    for path in ["/", "/explorer/blocks/12"] {
+        let (code, body) = harness.get_raw(path);
+        assert_eq!(code, 200, "GET {} should serve the interface", path);
+        assert!(body.contains("<!DOCTYPE html>"), "GET {} is the shell", path);
+    }
+}
+
+#[test]
 fn no_response_publishes_a_balance_or_a_whole_address() {
     let harness = Harness::launch(false);
     harness.mine();

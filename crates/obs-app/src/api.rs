@@ -483,14 +483,30 @@ impl Handler for App {
             // Which mark the front end should show.  Two fields, and no URL in it
             // unless the operator chose a browser-visible source (see `crate::logo`).
             (Method::Get, ["assets", "mark.json"]) => self.logo.mark_config(),
-            _ => match &self.files {
-                // Anything that is not an API path may be a page or an asset.
-                Some(files) => match files.serve(request) {
-                    Some(response) => response,
+            _ => {
+                // An unmatched path under an API namespace does not exist, and it
+                // must say so.  Serving the interface's HTML with a 200 here would
+                // make `/v1/wallet/<address>/balance` *look* like an endpoint that
+                // answered — the privacy contract is that there is no balance
+                // route, so a client asking for one must receive a refusal it can
+                // act on, not a page.  Only paths that could be pages reach the
+                // static tree.
+                let api_path = matches!(request.path.as_str(), "/v1" | "/healthz")
+                    || request.path.starts_with("/v1/")
+                    || request.path == NODE_READ_PREFIX
+                    || request.path.starts_with(&format!("{NODE_READ_PREFIX}/"));
+                if api_path {
+                    return error(Status::NOT_FOUND, "not_found", "no such endpoint");
+                }
+                match &self.files {
+                    // Anything else may be a page or an asset.
+                    Some(files) => match files.serve(request) {
+                        Some(response) => response,
+                        None => error(Status::NOT_FOUND, "not_found", "no such endpoint"),
+                    },
                     None => error(Status::NOT_FOUND, "not_found", "no such endpoint"),
-                },
-                None => error(Status::NOT_FOUND, "not_found", "no such endpoint"),
-            },
+                }
+            }
         };
         let _ = now;
         response

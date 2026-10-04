@@ -29,7 +29,7 @@ from the same checkout, which is what check 101 exists to pin down.
 
 Rust suite: 374 passed, 0 failed. JavaScript suite: 19 passed, 0 failed.
 
-## The 108 checks
+## The 109 checks
 
 | # | Check | Result |
 |---|-------|--------|
@@ -141,6 +141,7 @@ Rust suite: 374 passed, 0 failed. JavaScript suite: 19 passed, 0 failed.
 | 106 | the rendered units are complete and name the deployment's own paths | pass |
 | 107 | the rehearsal refuses a port range a network owns | pass |
 | 108 | the launch kit and the audit brief say what they must | pass |
+| 109 | the live interface refuses an unknown API path instead of answering with the page | pass |
 
 ## What the run found
 
@@ -542,9 +543,34 @@ The rules it produced, which are worth stating because they were not obvious:
 * a peer that goes away and comes back is the normal case on a real network, not
   an exceptional one.
 
+### Twenty-fourth defect: an unknown API path answered with the interface
+
+Found by probing the *running* deployment rather than the route table. The
+privacy contract says there is no `GET /v1/wallet/{address}/balance`; the route
+table has no such entry, and check 78 proves it by reading the table. But the
+service also serves the single-page interface with a shell fallback for
+extension-less paths, and `/v1/wallet/<address>/balance` is extension-less. So
+the route that does not exist answered **`200 text/html`** — the shell — and any
+client that checks status codes rather than route tables would have read that as
+"the endpoint is there". The claim was true of the router and false of the wire.
+
+It was fixed where the truth is decided: a path under `/v1/` or `/node/` (and
+`/v1` or `/healthz` itself) that matches no route is a `404 not_found`, and only
+paths that could be pages reach the static tree. Pages still get the shell —
+`/explorer/blocks/12` is served, and the regression test asserts both halves, so
+a fix that broke the product would fail its own test. The test is
+`an_unknown_api_path_is_a_404_even_when_the_interface_is_served`
+(`crates/obs-app/tests/explorer.rs`); it fails on the old code with
+`left: 200, right: 404` and passes now, and acceptance check 109 holds the same
+line against a live deployment.
+
+The lesson is the one this project keeps relearning: a property proven of a data
+structure is not a property of the service. The route table is not the wire, and
+a page is not an endpoint.
+
 The audit found no path that mints value, changes a balance, approves a claim,
 alters a fee, a reward, a supply or a timing rule, or bypasses consensus — and
-the search for such a path is itself a check in the acceptance run (95, 96).
+the search for such a path is itself a check in the acceptance run (95, 96, 109).
 
 ## Re-running it
 

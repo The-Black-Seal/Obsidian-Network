@@ -78,6 +78,13 @@ Two writes are forwarded, and only these:
 * `POST /node/api/v1/account/proof` — an account proving its own ownership with a
   signature over a fresh nonce, to read **its own** state. The node answers only
   when the signature proves the key; an unknown account is a `404`, not a number.
+
+The same is true of the wire, not only of the route table: a path under `/v1/`
+that matches no route is a `404 not_found` even though the interface is served
+from the same origin with a page fallback. `GET /v1/wallet/<address>/balance`
+does not exist, and asking for it returns a refusal rather than a page — a `200`
+carrying the HTML shell would be an answer a client could mistake for an
+endpoint. Only paths that could be pages reach the interface.
   `GET` on this path is refused, so no third party can name an address and
   receive a balance.
 

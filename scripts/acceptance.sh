@@ -515,6 +515,20 @@ check 108 "the launch kit and the audit brief say what they must" \
         grep -q "No third party has audited this code" docs/23-audit-brief.md &&
         grep -q "Launch readiness" docs/23-audit-brief.md'
 
+# An API path that matches no route must be refused even though the interface is
+# mounted and the interface is a single page: otherwise GET
+# /v1/wallet/<address>/balance answers 200 with HTML, and the one route the
+# privacy contract promises does not exist is the one route a client could
+# mistake for an endpoint.  Pages still reach the shell, which is the next
+# assertion, because a fix that broke the product would not be a fix.
+check 109 "the live interface refuses an unknown API path instead of answering with the page" \
+    bash -c "for p in /v1/wallet/dobs1zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz/balance /v1/nonesuch /v1; do
+            code=\$(curl -s -o /tmp/obs-api-probe.txt -w '%{http_code}' $BASE\$p);
+            [ \"\$code\" = 404 ] || { echo \"\$p answered \$code\"; exit 1; };
+            grep -q not_found /tmp/obs-api-probe.txt || { echo \"\$p is not a named refusal\"; exit 1; };
+        done;
+        curl -sf $BASE/explorer/blocks/1 | grep -q '<!DOCTYPE html>'"
+
 # ---------------------------------------------------------------------------
 
 echo
