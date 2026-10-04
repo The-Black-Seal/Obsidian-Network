@@ -30,14 +30,17 @@ need() { # need <command> <why>
 # definition.
 network_ports() { # network_ports <network>  → "api peer interface service"
     local network="$1" row
-    row="$("$OBS_BIN/obs-cli" networks 2>/dev/null | awk -v n="$network" '$1 == n { print $4, $5, $6, $7 }')"
+    row="$("$OBS_BIN/obs-cli" networks 2>/dev/null | awk -v n="$network" '$1 == n { print $4, $5, $6, $7; exit }')"
     [ -n "$row" ] || row="$(awk -v n="$network" '$1 == n { print $4, $5, $6, $7 }' "$OBS_ROOT/scripts/ports.txt" 2>/dev/null || true)"
     [ -n "$row" ] || die "unknown network $network (run: $OBS_BIN/obs-cli networks)"
     printf '%s' "$row"
 }
 
 network_prefix() { # network_prefix <network>  → the address prefix
-    "$OBS_BIN/obs-cli" networks 2>/dev/null | awk -v n="$1" '$1 == n { print $3 }'
+    # `obs-cli networks` has a second section that also starts a line with the
+    # network's name (the founder invitations), so every reader takes the first
+    # match: the table row.
+    "$OBS_BIN/obs-cli" networks 2>/dev/null | awk -v n="$1" '$1 == n { print $3; exit }'
 }
 
 http_ok() { curl -sf --max-time "${OBS_HTTP_TIMEOUT:-5}" "$1"; }
@@ -64,6 +67,17 @@ wait_for_height() { # wait_for_height <node-url> <height> <seconds>
             if [ -n "$height" ] && [ "$height" -ge "$want" ] 2>/dev/null; then return 0; fi
         fi
         sleep 0.5
+    done
+    return 1
+}
+
+# Waits until a node reports at least this many bonded validators.
+wait_for_validators() { # wait_for_validators <node-url> <count> <seconds>
+    local url="$1" want="$2" deadline=$((SECONDS + $3)) active
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        active="$(json_number "$(http_ok "$url/api/v1/status" 2>/dev/null || true)" active_validators || true)"
+        if [ -n "$active" ] && [ "$active" -ge "$want" ] 2>/dev/null; then return 0; fi
+        sleep 1
     done
     return 1
 }

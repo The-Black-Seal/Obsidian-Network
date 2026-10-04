@@ -173,7 +173,7 @@ the page.
 
 ## Documentation
 
-`docs/README.md` indexes all 21 documents. The ones that answer the questions
+`docs/README.md` indexes all 23 documents. The ones that answer the questions
 people ask first:
 
 * [Proof of Time](docs/03-proof-of-time.md) — what it is, and what it deliberately is not
@@ -182,7 +182,10 @@ people ask first:
 * [Wallet](docs/11-wallet.md) — what never leaves the device
 * [Explorer and privacy](docs/13-explorer-and-privacy.md) — partial addresses and no balances, enforced three ways
 * [Security](docs/15-security.md) — the threat model, and what this system does not claim
-* [Acceptance](docs/21-acceptance.md) — the 100-step run and its results
+* [Operations](docs/17-operations.md) — the five numbers to watch, and what each one means
+* [Acceptance](docs/21-acceptance.md) — the 108-step run, what it found, and the adversarial pass
+* [The launch kit](docs/22-launch-kit.md) — rehearse, deploy the testnet, watch it, back it up, then mainnet
+* [The audit brief](docs/23-audit-brief.md) — what to review, what to attack, and the launch-readiness list
 
 ## What this project does not claim
 

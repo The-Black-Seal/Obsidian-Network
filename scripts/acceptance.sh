@@ -464,6 +464,58 @@ check 102 "the operator can mint a genesis invitation, and the code is never ech
         rm -f "$store"'
 
 # ---------------------------------------------------------------------------
+section "The launch kit (105)"
+# ---------------------------------------------------------------------------
+
+# A dry run is a promise: it prints what it would do and creates nothing.  The
+# plan has to name the deployment's own ports, because a plan that describes
+# the wrong network is worse than no plan.
+check 105 "a deploy dry run prints the plan and changes nothing" \
+    bash -c 'dir=/tmp/obs-acceptance-dry-$$; rm -rf "$dir"
+        out="$(bash scripts/deploy.sh --network testnet --dry-run --dir "$dir" 2>&1)" &&
+        printf "%s" "$out" | grep -q "dry run: nothing will be created or changed" &&
+        printf "%s" "$out" | grep -q "8300" &&
+        printf "%s" "$out" | grep -q "9300" &&
+        printf "%s" "$out" | grep -q "would run: mkdir -p $dir" &&
+        [ ! -d "$dir" ]'
+
+# The units are the thing systemd runs, so the check renders a real set (into a
+# scratch directory, with real keys) and reads the directives: no placeholder
+# may survive, the node must carry a genesis anchor and the monitor a peer
+# expectation, and every path must be the deployment's, not a template's.
+check 106 "the rendered units are complete and name the deployment's own paths" \
+    bash -c 'dir=/tmp/obs-acceptance-units-$$; units=/tmp/obs-acceptance-units-out-$$
+        rm -rf "$dir" "$units"
+        bash scripts/deploy.sh --network staging --dir "$dir" --units-out "$units" --min-peers 2 >/dev/null 2>&1 &&
+        [ -f "$units/obs-node.service" ] && [ -f "$units/obs-app.service" ] &&
+        [ -f "$units/obs-monitor.service" ] && [ -f "$units/obs-monitor.timer" ] &&
+        ! grep -vE "^[[:space:]]*#" "$units"/* | grep -qE "@[A-Z_]+@" &&
+        grep -q -- "--genesis-timestamp now" "$units/obs-node.service" &&
+        grep -q -- "--data-dir $dir/node" "$units/obs-node.service" &&
+        grep -q -- "--api-port 8400" "$units/obs-node.service" &&
+        grep -q -- "--min-peers 2" "$units/obs-monitor.service" &&
+        grep -q -- "--static-dir" "$units/obs-app.service" &&
+        rm -rf "$dir" "$units"'
+
+# The rehearsal refuses to run on a port a network owns, and refuses before it
+# starts anything: a rehearsal that half-starts reports on nodes it did not
+# create, which is how a harness lies.
+check 107 "the rehearsal refuses a port range a network owns" \
+    bash -c 'out="$(bash scripts/rehearse.sh --network testnet --base-port 9200 --dir /tmp/obs-acceptance-rehearse-$$ 2>&1)"; code=$?
+        printf "%s" "$out" | grep -q "would collide with port 9200" && [ "$code" -ne 0 ]'
+
+# The two documents an operator and an auditor read first: the kit has to name
+# the rehearsal, the monitor and the restore drill, and the audit brief has to
+# say in plain words that nobody outside the project has reviewed it.
+check 108 "the launch kit and the audit brief say what they must" \
+    bash -c 'grep -q "scripts/rehearse.sh" docs/22-launch-kit.md &&
+        grep -q "scripts/monitor.sh" docs/22-launch-kit.md &&
+        grep -q "scripts/restore.sh" docs/22-launch-kit.md &&
+        grep -q -- "--confirm-mainnet" docs/22-launch-kit.md &&
+        grep -q "No third party has audited this code" docs/23-audit-brief.md &&
+        grep -q "Launch readiness" docs/23-audit-brief.md'
+
+# ---------------------------------------------------------------------------
 
 echo
 echo "checks: $((PASS + FAIL))   passed: $PASS   failed: $FAIL"

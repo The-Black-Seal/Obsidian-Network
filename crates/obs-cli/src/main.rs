@@ -213,7 +213,11 @@ Account registration (six steps, no email code)
 
 Operator
   devnet init --data-dir <dir> [--keystore <file>] [--password-file <file>] \
-              [--invite <code>] [--gmail <a@gmail.com>]
+              [--invite <code>] [--gmail <a@gmail.com>] [--node-url <url>]
+              founds a network and registers the founder only when --node-url
+              names the node that will carry block 1; without it, a node with
+              --mine stays empty and `devnet register --node-url <url>` does the
+              registration later.
   devnet register --data-dir <dir> [--keystore <file>] [--password-file <file>]
   devnet expect-genesis
   authority generate --authority-key <file>

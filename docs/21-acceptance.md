@@ -29,7 +29,7 @@ from the same checkout, which is what check 101 exists to pin down.
 
 Rust suite: 374 passed, 0 failed. JavaScript suite: 19 passed, 0 failed.
 
-## The 104 checks
+## The 108 checks
 
 | # | Check | Result |
 |---|-------|--------|
@@ -137,6 +137,10 @@ Rust suite: 374 passed, 0 failed. JavaScript suite: 19 passed, 0 failed.
 | 102 | the operator can mint a genesis invitation, and the code is never echoed back | pass |
 | 103 | the page and the route table name no mark host, whatever the configuration | pass |
 | 104 | the page falls back to its own drawn seal when a mark cannot load | pass |
+| 105 | a deploy dry run prints the plan and changes nothing | pass |
+| 106 | the rendered units are complete and name the deployment's own paths | pass |
+| 107 | the rehearsal refuses a port range a network owns | pass |
+| 108 | the launch kit and the audit brief say what they must | pass |
 
 ## What the run found
 
@@ -164,6 +168,11 @@ it passed, and its evidence was discarded by a `2>/dev/null` in the check. The
 test now asserts the exact debug form and the absence of the phrase and the keys;
 the check keeps its log and prints the failing test's name. The rule is in
 [Testing](19-testing.md#a-test-may-not-assert-a-property-of-a-random-values-spelling).
+
+A twenty-third, the most serious of them all, came out of the rehearsal —
+a peer that restarted was never dialled again, and the network forked quietly.
+It has its own section below, under [the security
+audit](#twenty-third-defect-a-peer-that-restarted-was-never-dialled-again).
 
 A nineteenth and twentieth came from installing the official mark: `obs-app
 --logo-source` was documented and rejected by the parser (the same drift as
@@ -491,9 +500,51 @@ people to re-run rather than to read — the same rule as [defect
 deterministic search: the last word is replaced by the first word in the list
 that makes the phrase invalid.
 
+### Twenty-third defect: a peer that restarted was never dialled again
+
+The rehearsal found this one, and it is the kind of defect a unit test cannot
+see. Three nodes were founded, joined and agreed; then the founder was killed
+and restarted. It came back, and the two followers never spoke to it again. The
+chain forked: the founder mined its own blocks, the followers mined theirs, and
+neither side reported an error. On two hosts this is a network that survives its
+own restart in name only.
+
+Two defects were behind it, and the second was only found because the first fix
+made the test fail *differently*:
+
+1. `--peer` was a one-shot dial at startup. The dial loop ran once, so a peer
+   that was not there at that instant — a peer rebooting, a peer that had not
+   finished its own startup, a network cable that was out — was never tried
+   again. The node now re-dials every configured peer that is not connected,
+   with an exponential backoff of 2 s doubling to 60 s, reset on connection, and
+   skips addresses that are banned for misbehaviour.
+2. The manager's set of *in-flight* dials was keyed by the address that was
+   dialled and cleared by the address the peer *resolved to*. A configured
+   `0.0.0.0:9300` resolves to `127.0.0.1:9300`, so the entry for the former was
+   never removed: the node believed it was already dialling that peer, for ever.
+   The set is now keyed by the dialled address, carries the dialled address
+   through the connected and rejected events, and expires (four times the
+   connect timeout) so that a lost event cannot wedge an address permanently.
+
+The test, `a_configured_peer_that_restarts_is_dialled_again`
+(`crates/obs-node/tests/node.rs`), starts a follower, drops its peer, brings the
+peer back on the same port as a new process, and requires both to see each other
+without either being restarted itself. It fails on the old code with a timeout
+and passes in four seconds now. It is check 106's neighbouring coverage, and it
+is the reason to rehearse rather than only to test.
+
+The rules it produced, which are worth stating because they were not obvious:
+
+* never compare a *configured* address with a *connected* one literally —
+  compare what identifies the peer, which here is its port;
+* an in-flight entry that is only cleared by the arrival of a specific event
+  will eventually be cleared by no event at all; every wait needs an expiry;
+* a peer that goes away and comes back is the normal case on a real network, not
+  an exceptional one.
+
 The audit found no path that mints value, changes a balance, approves a claim,
 alters a fee, a reward, a supply or a timing rule, or bypasses consensus — and
-the search for such a path is itself ran as an acceptance check.
+the search for such a path is itself a check in the acceptance run (95, 96).
 
 ## Re-running it
 

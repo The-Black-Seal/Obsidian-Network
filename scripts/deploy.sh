@@ -38,6 +38,9 @@ WANT_MINE=1
 WANT_VALIDATOR=1
 ALERT_CMD=""
 SYSTEMD=1
+MIN_PEERS=""
+GENESIS="now"
+
 
 usage() {
     cat <<'USAGE'
@@ -54,6 +57,12 @@ deploy.sh — found, run and verify an Obsidian Network on this machine
   --no-mine             do not mine
   --no-validator        do not bond a validator
   --alert-cmd <cmd>     the monitor's alert command (mail, curl to a webhook, ...)
+  --min-peers <n>       how many peers the monitor expects (default 1; 0 for a
+                        network whose only node is this one)
+  --genesis-timestamp <now|seconds>   the chain's epoch in the node unit
+                        (default now: this deployment founds the network; a node
+                        joining somebody else's chain takes their epoch, or a
+                        --genesis-file, and must not mine until it has synced)
   --no-systemd          do not touch systemd (use with --units-out)
   --no-build            require the release binaries to exist already
   --dry-run             print what would happen and change nothing
@@ -72,6 +81,8 @@ while [ $# -gt 0 ]; do
         --units-out) UNITS_OUT="${2:?--units-out needs a path}"; shift ;;
         --stage) STAGE="${2:?--stage needs a name}"; shift ;;
         --alert-cmd) ALERT_CMD="${2:?--alert-cmd needs a command}"; shift ;;
+        --min-peers) MIN_PEERS="${2:?--min-peers needs a number}"; shift ;;
+        --genesis-timestamp) GENESIS="${2:?--genesis-timestamp needs a value}"; shift ;;
         --mine) WANT_MINE=1 ;;
         --no-mine) WANT_MINE=0 ;;
         --validator) WANT_VALIDATOR=1 ;;
@@ -104,6 +115,17 @@ read -r API_PORT PEER_PORT UI_PORT SERVICE_PORT <<EOF
 $(network_ports "$NETWORK")
 EOF
 
+# A network of one node is a legitimate testnet, and a monitor that warns about
+# having no peers for ever teaches its operator to ignore it.  Mainnet is
+# different: a mainnet node with no peers is a node that cannot tell agreement
+# from silence, so it is expected to have at least one.
+if [ -z "$MIN_PEERS" ]; then
+    if [ "$NETWORK" = mainnet ]; then MIN_PEERS=1; else MIN_PEERS=0; fi
+fi
+case "$MIN_PEERS" in
+    ''|*[!0-9]*) die "--min-peers $MIN_PEERS is not a number" ;;
+esac
+
 run() { # run <command...>  — executes, or prints it under --dry-run
     if [ "$DRY_RUN" = 1 ]; then
         printf '  would run: %s\n' "$*"
@@ -126,8 +148,8 @@ as_owner() { # as_owner <command...>  — run as the deployment's user
 # Preflight: everything that can be checked before anything is created
 # ---------------------------------------------------------------------------
 
-OBS_CHAIN_ID="$("$OBS_BIN/obs-cli" networks 2>/dev/null | awk -v n="$NETWORK" '$1 == n { print $2 }')"
-OBS_ADDR_PREFIX="$("$OBS_BIN/obs-cli" networks 2>/dev/null | awk -v n="$NETWORK" '$1 == n { print $3 }')"
+OBS_CHAIN_ID="$("$OBS_BIN/obs-cli" networks 2>/dev/null | awk -v n="$NETWORK" '$1 == n { print $2; exit }')"
+OBS_ADDR_PREFIX="$("$OBS_BIN/obs-cli" networks 2>/dev/null | awk -v n="$NETWORK" '$1 == n { print $3; exit }')"
 say "network    $NETWORK (chain id ${OBS_CHAIN_ID:-?}, addresses ${OBS_ADDR_PREFIX:-?})"
 say "directory  $DEPLOY_DIR"
 say "run as     $DEPLOY_USER"
@@ -252,6 +274,8 @@ render_units() { # render_units <out-dir>
             -e "s|@API_PORT@|$API_PORT|g" \
             -e "s|@PEER_PORT@|$PEER_PORT|g" \
             -e "s|@UI_PORT@|$UI_PORT|g" \
+            -e "s|@MIN_PEERS@|$MIN_PEERS|g" \
+            -e "s|@GENESIS@|$GENESIS|g" \
             -e "s|@AUTHORITY_KEY@|$authority|g" \
             "$source_file" > "$target"
         # The mine/validator switches are words or nothing at all.
@@ -272,8 +296,9 @@ render_units() { # render_units <out-dir>
         fi
         # Anything still carrying @UPPER@ at this point is a placeholder the
         # renderer does not know about, and a unit file is a bad place to guess.
-        if grep -qE '@[A-Z_]+@' "$target"; then
-            die "unfilled placeholder in $target: $(grep -oE '@[A-Z_]+@' "$target" | sort -u | tr '\n' ' ')"
+        # Comments may talk about placeholders; only the directives count.
+        if grep -vE '^[[:space:]]*#' "$target" | grep -qE '@[A-Z_]+@'; then
+            die "unfilled placeholder in $target: $(grep -vE '^[[:space:]]*#' "$target" | grep -oE '@[A-Z_]+@' | sort -u | tr '\n' ' ')"
         fi
         chmod 644 "$target"
     done
@@ -290,6 +315,10 @@ stage_units() {
     local out="$UNITS_OUT"
     if [ -z "$out" ]; then
         out="$(mktemp -d)"
+        if [ "$DRY_RUN" = 1 ]; then
+            say "units: would render into a temporary directory and install them into /etc/systemd/system"
+            return 0
+        fi
         render_units "$out"
         if [ "$SYSTEMD" = 0 ]; then
             say "units: left in $out (--no-systemd)"
@@ -316,6 +345,10 @@ stage_units() {
 
 stage_register() {
     local node_url="http://127.0.0.1:$API_PORT"
+    if [ "$DRY_RUN" = 1 ]; then
+        say "register: would wait for the node on $node_url, register the founder and bond a validator"
+        return 0
+    fi
     wait_for_http "$node_url/api/v1/status" 60 "the node" || die "the node is not answering on $node_url; check: journalctl -u obs-node -n 50"
     say "register: the founder's registration (block 1 carries it, with the 100,000 OBS genesis allocation)"
     local invite_arg=()
@@ -365,6 +398,7 @@ stage_verify() {
     local node_url="http://127.0.0.1:$API_PORT"
     local ui_url="http://127.0.0.1:$UI_PORT"
     local failures=0
+    local status
 
     if ! node_serves_deployment "$node_url" "$DEPLOY_DIR" "$NETWORK"; then
         warn "verify: the node is not serving this deployment's chain"
@@ -375,7 +409,6 @@ stage_verify() {
         return 1
     fi
     local height head finalized supply max_supply active peers
-    local status
     height="$(json_number "$status" height)"
     head="$(json_string "$status" head)"
     finalized="$(json_number "$status" finalized_height)"
@@ -395,9 +428,18 @@ stage_verify() {
     fi
     if [ "${active:-0}" -ge 1 ] 2>/dev/null; then
         say "verify: a validator is bonded"
-    else
-        warn "verify: no validator is bonded, so finality will not advance"
-        failures=$((failures+1))
+    elif [ "$WANT_VALIDATOR" = 1 ]; then
+        # The bond is a transaction: it has to be mined before the validator set
+        # contains it.  A verification that runs a second after the bond was
+        # submitted is not evidence that the deployment is broken, it is
+        # evidence that the check was early.
+        say "verify: waiting for the validator bond to be mined"
+        if wait_for_validators "$node_url" 1 60; then
+            say "verify: a validator is bonded"
+        else
+            warn "verify: no validator is bonded after 60s, so finality will not advance"
+            failures=$((failures+1))
+        fi
     fi
     if http_ok "$ui_url/healthz" >/dev/null 2>&1 || http_ok "$ui_url/" >/dev/null 2>&1; then
         say "verify: the interface answers on $ui_url"
@@ -406,13 +448,22 @@ stage_verify() {
         failures=$((failures+1))
     fi
     if [ -x "$OBS_PREFIX/scripts/monitor.sh" ]; then
-        if bash "$OBS_PREFIX/scripts/monitor.sh" --network "$NETWORK" --node-url "$node_url" \
-            --app-url "$ui_url" --data-dir "$DEPLOY_DIR" --quiet >/dev/null 2>&1; then
-            say "verify: the health check is green"
-        else
-            warn "verify: the health check is not green — run: bash scripts/monitor.sh --network $NETWORK --node-url $node_url"
-            failures=$((failures+1))
-        fi
+        local health=0
+        bash "$OBS_PREFIX/scripts/monitor.sh" --network "$NETWORK" --node-url "$node_url" \
+            --app-url "$ui_url" --data-dir "$DEPLOY_DIR" --min-peers "$MIN_PEERS" --quiet \
+            >/dev/null 2>&1 || health=$?
+        case "$health" in
+            0) say "verify: the health check is green" ;;
+            1)
+                say "verify: the health check is green with warnings:"
+                bash "$OBS_PREFIX/scripts/monitor.sh" --network "$NETWORK" --node-url "$node_url" \
+                    --data-dir "$DEPLOY_DIR" --min-peers "$MIN_PEERS" 2>&1 | sed 's/^/    /' || true
+                ;;
+            *)
+                warn "verify: the health check is critical — run: bash scripts/monitor.sh --network $NETWORK --node-url $node_url --data-dir $DEPLOY_DIR"
+                failures=$((failures+1))
+                ;;
+        esac
     fi
     return "$failures"
 }
@@ -424,6 +475,10 @@ case "$STAGE" in
     units) stage_units ;;
     register) stage_register ;;
     verify)
+        if [ "$DRY_RUN" = 1 ]; then
+            say "verify: would check height, finality, the interface and the health check"
+            exit 0
+        fi
         stage_verify || exit 1
         ;;
     all)
@@ -438,7 +493,7 @@ case "$STAGE" in
             sleep 3
         fi
         stage_register
-        if [ "$UNITS_OUT" = "" ]; then
+        if [ "$UNITS_OUT" = "" ] && [ "$DRY_RUN" != 1 ]; then
             if stage_verify; then :; else
                 warn "the deployment is up but not fully verified; see the lines above"
                 exit 1

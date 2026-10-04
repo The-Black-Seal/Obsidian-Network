@@ -4,6 +4,13 @@
 # The API port is bound to loopback on purpose: the only port the world should
 # reach is the one a TLS proxy owns.  The peer port is bound to every interface,
 # because consensus connections come from other hosts.
+#
+# --genesis-timestamp is how a chain gets its identity.  This unit is rendered
+# for the node that FOUNDS the network, so it is `now`: the epoch is the moment
+# the chain starts.  A node that joins a network instead takes the operator's
+# epoch (`--genesis-timestamp <seconds from the other node's /status>`) or a
+# recorded genesis record (`--genesis-file <network>-genesis`), and must not
+# mine or validate until it has synced.
 [Unit]
 Description=Obsidian Network node (@NETWORK@)
 Documentation=file://@PREFIX@/docs/17-operations.md
@@ -17,7 +24,8 @@ Group=@GROUP@
 WorkingDirectory=@PREFIX@
 ExecStart=@PREFIX@/target/release/obs-node --network @NETWORK@ \
     --data-dir @DIR@/node --bind 127.0.0.1 --api-port @API_PORT@ \
-    --listen-port @PEER_PORT@ --fsync @MINE@ @VALIDATOR@ \
+    --listen-port @PEER_PORT@ --genesis-timestamp @GENESIS@ \
+    --fsync @MINE@ @VALIDATOR@ \
     --authority-key @AUTHORITY_KEY@ \
     --keystore @DIR@/founder.keystore.json \
     --keystore-password-file @DIR@/founder.password.txt

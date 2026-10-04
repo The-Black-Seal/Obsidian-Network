@@ -53,6 +53,35 @@ transaction (resubmitting is idempotent — the pool recognises it).
 * `identity_taken` — one canonical Gmail identity holds one account. A `+tag`,
   a dot, or `googlemail.com` does not make a new identity.
 
+## `gmail_duplicate`: "this Gmail identity already has an account"
+
+The chain, not the registration server, is the authority on this, so the message
+can appear at two different moments:
+
+* **while registering a new account** — the canonical identity already holds one.
+  Canonicalisation maps `First.Last@googlemail.com` and `firstlast+anything@gmail.com`
+  onto the same identity, so a second account for the same person's mailbox is
+  refused on purpose. The chain's check is what makes the rule survive two
+  registration servers racing with the same address.
+* **while founding a network** — `obs-cli devnet init` (or `devnet register`)
+  posted the founder's registration to the node that answered, and that node is
+  serving a chain where the founder is already registered. This is normally the
+  sign of **two deployments on one machine**: the founder went into the other
+  chain. `devnet init` no longer guesses — it registers only when `--node-url`
+  names the node that will carry block 1 — so on a clean run this cannot happen;
+  on an older deployment it means "start the node first, then
+  `obs-cli devnet register --node-url http://127.0.0.1:7200 --data-dir <dir>`".
+  Check which chain a node is serving before reacting:
+
+  ```sh
+  curl -s http://127.0.0.1:7200/api/v1/status | grep -o '"genesis_timestamp":[0-9]*'
+  cat <dir>/node/devnet-genesis            # the deployment's own record
+  ```
+
+  If those two disagree with the node you are talking to, stop and fix the
+  deployment rather than the registration: every script in `scripts/` refuses to
+  work on a node serving a different chain, for exactly this reason.
+
 ## Registration fails at step 3
 
 * `invite_invalid` — the code is unknown for this network (codes are per-network.
@@ -71,6 +100,46 @@ Check the device clock — TOTP is wall-clock based even though mining is not. A
 Expected when the node is not running yet: the wallet and authority are still
 written, and the command is re-runnable. Start the node and run
 `obs-cli devnet register`.
+
+## `GenesisEpochGap`: the node will not found the chain
+
+```
+obs-node: GenesisEpochGap { genesis_timestamp: 1767225600, clock: 1791072099 }
+obs-node: this node is on a chain whose genesis epoch has passed and has no peer
+to join; it can neither found the chain nor sync one.
+```
+
+The genesis timestamp is the chain's identity *and* its clock: the chain's
+protocol time advances at most 60 protocol seconds per block, so a network has
+to start at its epoch. A node that is pointed at an epoch in the past, with no
+peer to sync from, has nothing it can honestly do — it will not invent a chain.
+
+Three ways out, all deliberate:
+
+* **found the network now** — `--genesis-timestamp now`, which is what
+  `scripts/deploy.sh` renders into the founding node's unit;
+* **join the chain** — `--peer <host>:<port>` (the peer completes the network's
+  public parameters, including the authority key) or `--genesis-file <net>-genesis`
+  plus the operator's epoch from the other node's `/api/v1/status`;
+* **you are on the wrong network** — an epoch from July 2025 is mainnet's
+  planned one; a devnet founded an hour ago carries its own.
+
+The unit renders `--genesis-timestamp now` for the node that founds the network,
+because that node *is* the network's beginning. A node that joins must not mine
+or validate until it has synced.
+
+## A node with `--mine` mines nothing (height stays 0)
+
+Block 1 carries the founder's registration, so a chain with no registered founder
+has nothing to put in its first block. If you started `obs-node --mine` yourself
+and never registered, there is no founder: run `obs-cli devnet register
+--node-url http://127.0.0.1:<api port> --data-dir <dir>` (or let
+`scripts/deploy.sh` do it, which registers before it verifies), and the node will
+produce block 1 on its next tick.
+
+If the founder *is* registered and the height still does not move, look at
+`--validator` and the node log: a validator that is not yet bonded produces
+blocks but no finality, and [17](17-operations.md) explains which number to read.
 
 ## `--authority-key expects 32 bytes of hex`
 

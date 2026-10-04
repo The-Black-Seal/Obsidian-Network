@@ -66,6 +66,30 @@ re-run. The first block carries that registration and the founder's first claim:
 the genesis claim, which is the one-time 100,000 OBS allocation to the treasury
 wallet.
 
+### `--node-url` decides which chain is founded
+
+A machine can serve several networks, and "the node on this network's default
+port" is not always the node you mean. So the rule is explicit:
+
+* `devnet init --node-url <url>` founds *and* registers: the registration goes to
+  the node you named, which is the node that will carry block 1;
+* `devnet init` **without** `--node-url` founds and stops there. It prints
+  `the founder is not registered yet: no --node-url was given, so init did not
+  guess at a chain`, and tells you to run
+  `obs-cli devnet register --node-url <url> --data-dir <dir>` once the node is up;
+* `devnet register --node-url <url>` is the second half, and is safe to re-run.
+
+Before that was the rule, `init` posted the founder's registration to whatever
+answered on the default port. On a machine already serving one deployment that
+is a different deployment's chain, and the symptom later is
+[`gmail_duplicate`](18-troubleshooting.md#gmail_duplicate-this-gmail-identity-already-has-an-account)
+— the founder is "already registered", on a chain that is not the one being
+deployed. A node with `--mine` and no founder registration mines **nothing**:
+height stays 0, because block 1 is the registration.
+
+`scripts/deploy.sh` always does this correctly, in this order: founding keys,
+units, node started, founder registered, validator bonded, verified.
+
 ## Each network, by hand
 
 The quickstart wraps these; running them by hand is what a service unit, a
